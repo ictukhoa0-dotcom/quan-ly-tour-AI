@@ -1,12 +1,13 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+from threading import Lock
 from typing import Any, AsyncIterator
 import secrets
 
+import bcrypt
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
@@ -14,16 +15,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import Base, SessionLocal, engine, get_db
-from .models import Assignment, Booking, Customer, Departure, Destination, Feedback, Guide, Itinerary, Payment, Tour
-from .schemas import BookingCreate, LoginRequest, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
+from .db import Base, SessionLocal, engine, ensure_account_session_version, get_db
+from .models import Account, Assignment, Booking, Customer, Departure, Destination, Feedback, Guide, Itinerary, Payment, Tour
+from .schemas import AccountCreate, AccountUpdate, BookingCreate, LoginRequest, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
 
 ALGORITHM = "HS256"
-DEMO_USERS = {
-    "admin": {"name": "Nguyễn Minh Anh", "role": "admin"},
-    "tuvan": {"name": "Trần Hoàng Yến", "role": "consultant"},
-    "ketoan": {"name": "Lê Quốc Bảo", "role": "accountant"},
-}
 ROLE_LABELS = {"admin": "Quản trị viên", "consultant": "Tư vấn viên", "accountant": "Kế toán"}
 RESOURCE_MODELS = {
     "tours": Tour,
@@ -54,18 +50,97 @@ READ_ROLES = {
     "assignments": {"admin", "consultant"},
     "feedback": {"admin", "consultant"},
 }
-bearer = HTTPBearer(auto_error=False)
 Base.metadata.create_all(bind=engine)
+ensure_account_session_version(engine)
+DUMMY_PASSWORD_HASH = bcrypt.hashpw(secrets.token_bytes(32), bcrypt.gensalt()).decode("ascii")
 
 
-def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict[str, str]:
-    if not credentials:
+def current_user(request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    token = request.cookies.get("viettour_session")
+    if not token:
         raise HTTPException(status_code=401, detail="Vui lòng đăng nhập để tiếp tục")
     try:
-        payload = jwt.decode(credentials.credentials, settings.jwt_secret, algorithms=[ALGORITHM])
-        return {"username": payload["sub"], "role": payload["role"], "name": payload["name"]}
-    except (JWTError, KeyError):
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
+        account_id = int(payload["sub"])
+    except (JWTError, KeyError, TypeError, ValueError):
         raise HTTPException(status_code=401, detail="Phiên đăng nhập không hợp lệ hoặc đã hết hạn") from None
+    account = db.get(Account, account_id)
+    if account is None or not account.is_active or payload.get("ver", 0) != account.session_version:
+        raise HTTPException(status_code=401, detail="Phiên đăng nhập không hợp lệ hoặc đã hết hạn")
+    validate_request_origin(request)
+    return {"id": str(account.id), "username": account.username, "role": account.role, "name": account.name}
+
+
+def validate_request_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    trusted_origins = {settings.frontend_origin}
+    if settings.app_env == "development":
+        trusted_origins.add("http://127.0.0.1:5173")
+    if origin and origin not in trusted_origins and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        raise HTTPException(status_code=403, detail="Nguồn yêu cầu không được phép")
+
+
+class FixedWindowLimiter:
+    def __init__(self) -> None:
+        self._windows: dict[str, tuple[float, int]] = {}
+        self._lock = Lock()
+
+    def check(self, key: str, limit: int, window_seconds: int = 60) -> None:
+        now = datetime.now(timezone.utc).timestamp()
+        client = key
+        with self._lock:
+            expired = [item for item, (started, _) in self._windows.items() if now - started >= window_seconds]
+            for item in expired:
+                del self._windows[item]
+            started, count = self._windows.get(client, (now, 0))
+            if count >= limit:
+                raise HTTPException(status_code=429, detail="Quá nhiều yêu cầu. Vui lòng thử lại sau.")
+            if client not in self._windows and len(self._windows) >= 10_000:
+                del self._windows[next(iter(self._windows))]
+            self._windows[client] = (started, count + 1)
+
+
+rate_limiter = FixedWindowLimiter()
+
+
+def limit_requests(request: Request, action: str, limit: int) -> None:
+    client_host = request.client.host if request.client else "unknown"
+    rate_limiter.check(f"{action}:{client_host}", limit)
+
+
+def limit_ai_requests(request: Request) -> None:
+    limit_requests(request, "ai", 20)
+
+
+def hash_password(password: str) -> str:
+    if len(password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=422, detail="Mật khẩu không được vượt quá 72 byte")
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    if len(password.encode("utf-8")) > 72:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("ascii"))
+    except (ValueError, UnicodeEncodeError):
+        return False
+
+
+def public_account(account: Account) -> dict[str, Any]:
+    return {
+        "id": account.id,
+        "username": account.username,
+        "name": account.name,
+        "role": account.role,
+        "role_label": ROLE_LABELS[account.role],
+        "is_active": account.is_active,
+    }
+
+
+def require_admin(user: dict[str, str]) -> None:
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới được quản lý tài khoản")
 
 
 def require_write(resource: str, user: dict[str, str]) -> None:
@@ -94,8 +169,6 @@ def validate_security_settings() -> None:
     }
     if len(secret) < 32 or secret.casefold() in placeholders:
         raise RuntimeError("JWT_SECRET phải là khóa ngẫu nhiên riêng tối thiểu 32 ký tự; hãy cấu hình biến môi trường trước khi chạy.")
-    if settings.app_env == "development" and len(settings.demo_password) < 12:
-        raise RuntimeError("Trong development, DEMO_PASSWORD phải được cấu hình với tối thiểu 12 ký tự.")
 
 
 def serialize(item: Any) -> dict[str, Any]:
@@ -208,17 +281,46 @@ def seed_database() -> None:
         db.close()
 
 
+def ensure_initial_admin(db: Session | None = None) -> None:
+    owned_session = db is None
+    if db is None:
+        db = SessionLocal()
+    try:
+        if db.scalar(select(func.count(Account.id))):
+            return
+        username = settings.initial_admin_username.strip()
+        if not username or len(username) > 40 or not all(char.isascii() and (char.isalnum() or char in "_.-") for char in username):
+            raise RuntimeError("Cần cấu hình INITIAL_ADMIN_USERNAME hợp lệ để khởi tạo quản trị viên đầu tiên.")
+        password = settings.initial_admin_password
+        if (
+            len(password) < 12
+            or len(password.encode("utf-8")) > 72
+            or password.casefold() == "replace-with-a-private-initial-admin-password"
+        ):
+            raise RuntimeError("INITIAL_ADMIN_PASSWORD phải là mật khẩu riêng từ 12 đến 72 byte.")
+        db.add(Account(username=username, name="Quản trị viên", role="admin",
+                       password_hash=hash_password(password), is_active=True))
+        db.commit()
+    finally:
+        if owned_session:
+            db.close()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     validate_security_settings()
+    ensure_initial_admin()
     seed_database()
     yield
 
 
 app = FastAPI(title="VietTour AI API", version="1.0.0", lifespan=lifespan)
+allowed_origins = [settings.frontend_origin]
+if settings.app_env == "development":
+    allowed_origins.append("http://127.0.0.1:5173")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin, "http://127.0.0.1:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -231,25 +333,95 @@ def health():
 
 
 @app.post("/api/auth/login")
-def login(payload: LoginRequest):
-    if settings.app_env != "development":
-        raise HTTPException(status_code=403, detail="Đăng nhập demo đã bị tắt. Hãy cấu hình nhà cung cấp danh tính cho môi trường này.")
-    username, password = payload.username, payload.password
-    account = DEMO_USERS.get(username)
-    if account is None or not secrets.compare_digest(password, settings.demo_password):
+def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    validate_request_origin(request)
+    limit_requests(request, "login", 5)
+    account = db.scalar(select(Account).where(Account.username == payload.username))
+    password_hash = account.password_hash if account else DUMMY_PASSWORD_HASH
+    password_matches = verify_password(payload.password, password_hash)
+    if account is None or not account.is_active or not password_matches:
         raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không chính xác")
     token = jwt.encode(
-        {"sub": username, "role": account["role"], "name": account["name"],
+        {"sub": str(account.id), "ver": account.session_version,
          "exp": datetime.now(timezone.utc) + timedelta(hours=8)},
         settings.jwt_secret, algorithm=ALGORITHM,
     )
-    return {"access_token": token, "token_type": "bearer",
-            "user": {"username": username, "name": account["name"], "role": account["role"], "role_label": ROLE_LABELS[account["role"]]}}
+    response.set_cookie(
+        key="viettour_session",
+        value=token,
+        max_age=8 * 60 * 60,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="none" if settings.app_env == "production" else "lax",
+        path="/api",
+    )
+    return {"user": public_account(account)}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response):
+    validate_request_origin(request)
+    response.delete_cookie(key="viettour_session", path="/api", httponly=True,
+                           secure=settings.app_env == "production",
+                           samesite="none" if settings.app_env == "production" else "lax")
+    return {"message": "Đã đăng xuất"}
 
 
 @app.get("/api/me")
 def me(user: dict[str, str] = Depends(current_user)):
     return {**user, "role_label": ROLE_LABELS[user["role"]]}
+
+
+@app.get("/api/users")
+def list_accounts(db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    require_admin(user)
+    accounts = db.scalars(select(Account).order_by(Account.username)).all()
+    return [public_account(account) for account in accounts]
+
+
+@app.post("/api/users", status_code=201)
+def create_account(payload: AccountCreate, db: Session = Depends(get_db),
+                   user: dict[str, str] = Depends(current_user)):
+    require_admin(user)
+    account = Account(username=payload.username, name=payload.name, role=payload.role,
+                      password_hash=hash_password(payload.password), is_active=True)
+    db.add(account)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Tên đăng nhập đã được sử dụng") from None
+    db.refresh(account)
+    return public_account(account)
+
+
+@app.patch("/api/users/{account_id}")
+def update_account(account_id: int, payload: AccountUpdate, db: Session = Depends(get_db),
+                   user: dict[str, str] = Depends(current_user)):
+    require_admin(user)
+    account = get_entity(db, Account, account_id, "tài khoản")
+    changes = payload.model_dump(exclude_unset=True)
+    if account.id == int(user["id"]) and (
+        changes.get("is_active") is False or changes.get("role", account.role) != "admin"
+    ):
+        raise HTTPException(status_code=409, detail="Không thể vô hiệu hóa hoặc hạ quyền tài khoản đang đăng nhập")
+    removing_admin = account.role == "admin" and account.is_active and (
+        changes.get("is_active") is False or changes.get("role", account.role) != "admin"
+    )
+    if removing_admin:
+        active_admins = db.scalar(select(func.count(Account.id)).where(
+            Account.role == "admin", Account.is_active.is_(True)
+        )) or 0
+        if active_admins <= 1:
+            raise HTTPException(status_code=409, detail="Phải duy trì ít nhất một quản trị viên đang hoạt động")
+    if "password" in changes:
+        account.password_hash = hash_password(changes.pop("password"))
+        account.session_version += 1
+    for field, value in changes.items():
+        setattr(account, field, value)
+    db.commit()
+    db.refresh(account)
+    return public_account(account)
 
 
 @app.get("/api/dashboard")
@@ -443,13 +615,13 @@ def get_seats(departure_id: int, db: Session = Depends(get_db), _user: dict[str,
     return {"departure_id": departure.id, "capacity": departure.capacity, "remaining_seats": remaining_seats(db, departure)}
 
 
-@app.get("/api/ai/status")
+@app.get("/api/ai/status", dependencies=[Depends(limit_ai_requests)])
 def ai_status(_user: dict[str, str] = Depends(current_user)):
     configured = bool(settings.ai_api_key.strip())
     return {"configured": configured, "mode": "provider" if configured else "deterministic"}
 
 
-@app.post("/api/ai/recommendations")
+@app.post("/api/ai/recommendations", dependencies=[Depends(limit_ai_requests)])
 def recommendations(payload: RecommendationRequest, db: Session = Depends(get_db), _user: dict[str, str] = Depends(current_user)):
     today = date.today().isoformat()
     earliest = max(today, payload.departure_after.isoformat() if payload.departure_after else today)
@@ -509,7 +681,7 @@ async def optional_ai(system_prompt: str, user_prompt: str, max_tokens: int = 70
         raise HTTPException(status_code=502, detail="Dịch vụ AI trả về dữ liệu không hợp lệ") from None
 
 
-@app.post("/api/ai/tour-content")
+@app.post("/api/ai/tour-content", dependencies=[Depends(limit_ai_requests)])
 async def generate_tour_content(payload: TourGenerationRequest, db: Session = Depends(get_db), _user: dict[str, str] = Depends(current_user)):
     existing = []
     destination = payload.destination
@@ -533,7 +705,7 @@ async def generate_tour_content(payload: TourGenerationRequest, db: Session = De
     return {"content": fallback, "human_verification_required": True, "source": "ai" if ai_text else "deterministic"}
 
 
-@app.post("/api/ai/feedback-summary")
+@app.post("/api/ai/feedback-summary", dependencies=[Depends(limit_ai_requests)])
 async def feedback_summary(payload: SummaryRequest, db: Session = Depends(get_db), _user: dict[str, str] = Depends(current_user)):
     query = select(Feedback).order_by(Feedback.id.desc()).limit(payload.max_feedback)
     if payload.tour_id is not None:

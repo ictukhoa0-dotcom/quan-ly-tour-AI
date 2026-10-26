@@ -12,6 +12,7 @@ export const navItems: { key: string; label: string; icon: string; roles?: User[
   { key: "itineraries", label: "Lịch trình", icon: "route", roles: ["admin", "consultant"] },
   { key: "assignments", label: "Phân công", icon: "clipboard", roles: ["admin", "consultant"] },
   { key: "feedback", label: "Phản hồi", icon: "message", roles: ["admin", "consultant"] },
+  { key: "users", label: "Tài khoản", icon: "shield", roles: ["admin"] },
   { key: "ai", label: "Trợ lý AI", icon: "sparkles" },
 ];
 

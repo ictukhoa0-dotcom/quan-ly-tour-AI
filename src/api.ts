@@ -1,4 +1,4 @@
-import type { DashboardData, Row, User } from "./types";
+import type { Account, DashboardData, Row, User } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 
@@ -11,14 +11,14 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, token?: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
+      credentials: "include",
       headers: {
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...init?.headers,
       },
     });
@@ -40,31 +40,37 @@ async function request<T>(path: string, token?: string, init?: RequestInit): Pro
 
 export const api = {
   login: (username: string, password: string) =>
-    request<{ access_token: string; user: User }>("/auth/login", undefined, {
+    request<{ user: User }>("/auth/login", {
       method: "POST", body: JSON.stringify({ username, password }),
     }),
-  me: (token: string) => request<User>("/me", token),
-  dashboard: (token: string) => request<DashboardData>("/dashboard", token),
-  list: (token: string, resource: string) => request<Row[]>(`/${resource}`, token),
-  create: (token: string, resource: string, payload: Record<string, string | number>) =>
-    request<Row>(`/${resource}`, token, { method: "POST", body: JSON.stringify(payload) }),
-  update: (token: string, resource: string, id: number, payload: Record<string, string | number>) =>
-    request<Row>(`/${resource}/${id}`, token, { method: "PATCH", body: JSON.stringify(payload) }),
-  remove: (token: string, resource: string, id: number) =>
-    request<{ message: string }>(`/${resource}/${id}`, token, { method: "DELETE" }),
-  cancelBooking: (token: string, id: number) =>
-    request<Row>(`/bookings/${id}/cancel`, token, { method: "POST" }),
-  recommendations: (token: string, payload: Record<string, unknown>) =>
-    request<{ recommendations: Row[]; message: string }>("/ai/recommendations", token, {
+  logout: () => request<{ message: string }>("/auth/logout", { method: "POST" }),
+  me: () => request<User>("/me"),
+  dashboard: () => request<DashboardData>("/dashboard"),
+  list: (resource: string) => request<Row[]>(`/${resource}`),
+  create: (resource: string, payload: Record<string, string | number>) =>
+    request<Row>(`/${resource}`, { method: "POST", body: JSON.stringify(payload) }),
+  update: (resource: string, id: number, payload: Record<string, string | number>) =>
+    request<Row>(`/${resource}/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  remove: (resource: string, id: number) =>
+    request<{ message: string }>(`/${resource}/${id}`, { method: "DELETE" }),
+  cancelBooking: (id: number) =>
+    request<Row>(`/bookings/${id}/cancel`, { method: "POST" }),
+  recommendations: (payload: Record<string, unknown>) =>
+    request<{ recommendations: Row[]; message: string }>("/ai/recommendations", {
       method: "POST", body: JSON.stringify(payload),
     }),
-  generateTourContent: (token: string, payload: Record<string, unknown>) =>
+  generateTourContent: (payload: Record<string, unknown>) =>
     request<{ content: { description: string; itinerary: { day: number; title: string; details: string }[]; suggestion?: string }; human_verification_required: boolean; source: string }>(
-      "/ai/tour-content", token, { method: "POST", body: JSON.stringify(payload) },
+      "/ai/tour-content", { method: "POST", body: JSON.stringify(payload) },
     ),
-  summarizeFeedback: (token: string, payload: Record<string, number>) =>
+  summarizeFeedback: (payload: Record<string, number>) =>
     request<{ summary: string; count: number; average_rating: number | null; human_verification_required: boolean; source?: string }>(
-      "/ai/feedback-summary", token, { method: "POST", body: JSON.stringify(payload) },
+      "/ai/feedback-summary", { method: "POST", body: JSON.stringify(payload) },
     ),
-  aiStatus: (token: string) => request<{ configured: boolean; mode: "provider" | "deterministic" }>("/ai/status", token),
+  aiStatus: () => request<{ configured: boolean; mode: "provider" | "deterministic" }>("/ai/status"),
+  accounts: () => request<Account[]>("/users"),
+  createAccount: (payload: Pick<Account, "username" | "name" | "role"> & { password: string }) =>
+    request<Account>("/users", { method: "POST", body: JSON.stringify(payload) }),
+  updateAccount: (id: number, payload: Partial<Pick<Account, "name" | "role" | "is_active">> & { password?: string }) =>
+    request<Account>(`/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
 };

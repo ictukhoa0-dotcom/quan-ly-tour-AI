@@ -5,6 +5,11 @@ export type User = {
   role_label: string;
 };
 
+export type Account = User & {
+  id: number;
+  is_active: boolean;
+};
+
 export type Row = Record<string, string | number | null>;
 
 export type DashboardData = {

@@ -1,5 +1,5 @@
 from datetime import date
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class InputModel(BaseModel):
@@ -8,7 +8,34 @@ class InputModel(BaseModel):
 
 class LoginRequest(InputModel):
     username: str = Field(min_length=1, max_length=40)
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=72)
+
+
+class AccountCreate(InputModel):
+    username: str = Field(min_length=3, max_length=40, pattern=r"^[A-Za-z0-9_.-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    role: str = Field(pattern=r"^(admin|consultant|accountant)$")
+    password: str = Field(min_length=12, max_length=72)
+
+
+class AccountUpdate(InputModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    role: str | None = Field(default=None, pattern=r"^(admin|consultant|accountant)$")
+    password: str | None = Field(default=None, min_length=12, max_length=72)
+    is_active: bool | None = None
+
+    @field_validator("name", "role", "password", "is_active")
+    @classmethod
+    def reject_null_updates(cls, value):
+        if value is None:
+            raise ValueError("Giá trị cập nhật không được để trống")
+        return value
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not self.model_fields_set:
+            raise ValueError("Chỉ định ít nhất một trường cần cập nhật")
+        return self
 
 
 class BookingCreate(InputModel):

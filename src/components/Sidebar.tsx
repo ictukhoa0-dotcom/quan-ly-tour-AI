@@ -1,6 +1,6 @@
 import {
   CalendarDays, ClipboardList, Compass, Globe2, LayoutDashboard, Map, Menu, MessageSquareText,
-  Route, Sparkles, Ticket, Wallet, Users, X, type LucideIcon,
+  Route, Sparkles, Ticket, Wallet, Users, Shield, X, type LucideIcon,
 } from "lucide-react";
 import { navItems } from "../data";
 import type { User } from "../types";
@@ -8,7 +8,7 @@ import type { User } from "../types";
 const icons: Record<string, LucideIcon> = {
   layout: LayoutDashboard, map: Map, calendar: CalendarDays, ticket: Ticket, users: Users,
   wallet: Wallet, compass: Compass, globe: Globe2, route: Route, clipboard: ClipboardList,
-  message: MessageSquareText, sparkles: Sparkles,
+  message: MessageSquareText, sparkles: Sparkles, shield: Shield,
 };
 
 type Props = {

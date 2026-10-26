@@ -7,7 +7,6 @@ import { api } from "../api";
 import type { Row } from "../types";
 
 type Props = {
-  token: string;
   tours: Row[];
   onToast: (message: string, kind?: "success" | "error") => void;
 };
@@ -54,7 +53,7 @@ function greeting(mode: Mode): string {
   return "Mình có thể tổng hợp chủ đề và mức độ hài lòng từ phản hồi đã có. Bạn muốn xem phản hồi của tour nào?";
 }
 
-export default function AiStudio({ token, tours, onToast }: Props) {
+export default function AiStudio({ tours, onToast }: Props) {
   const [mode, setMode] = useState<Mode>("recommendations");
   const [messages, setMessages] = useState<Message[]>([{ id: 0, role: "assistant", text: greeting("recommendations") }]);
   const [draft, setDraft] = useState("");
@@ -68,11 +67,11 @@ export default function AiStudio({ token, tours, onToast }: Props) {
 
   useEffect(() => {
     let active = true;
-    api.aiStatus(token)
+    api.aiStatus()
       .then((status) => { if (active) setConfigured(status.configured); })
       .catch((error: unknown) => { if (active) onToast(error instanceof Error ? error.message : "Không thể kiểm tra cấu hình trợ lý.", "error"); });
     return () => { active = false; };
-  }, [token, onToast]);
+  }, [onToast]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -126,7 +125,7 @@ export default function AiStudio({ token, tours, onToast }: Props) {
       if (currentMode === "recommendations") {
         const budget = getBudget(prompt) ?? Number(dailyBudget);
         const duration = prompt.match(/(\d{1,2})\s*(?:ngày|ngay)/i);
-        result = await api.recommendations(token, {
+        result = await api.recommendations({
           budget,
           duration_days: duration ? Number(duration[1]) : null,
           preferences: getPreferences(prompt),
@@ -142,7 +141,7 @@ export default function AiStudio({ token, tours, onToast }: Props) {
         const requestedDays = prompt.match(/(\d{1,2})\s*(?:ngày|ngay)/i);
         const days = requestedDays ? Number(requestedDays[1]) : Number(selectedTour?.duration_days ?? 3);
         const destination = selectedTour?.destination_name ? String(selectedTour.destination_name) : prompt.replace(/^(viết|soạn|tạo|lên)\s*(nội dung|lịch trình|bản nháp)?\s*(tour|cho|tại|ở)?\s*/i, "").slice(0, 100);
-        result = await api.generateTourContent(token, {
+        result = await api.generateTourContent({
           ...(selectedTour ? { tour_id: Number(selectedTour.id) } : {}),
           destination: selectedTour ? "" : destination,
           duration_days: Math.min(30, Math.max(1, days)),
@@ -151,7 +150,7 @@ export default function AiStudio({ token, tours, onToast }: Props) {
         answer = "Đây là bản nháp để bạn xem xét. Lịch trình và thông tin cần được kiểm tra trước khi chia sẻ với khách.";
       } else {
         const selectedTour = tours.find((tour) => String(tour.id) === tourId);
-        result = await api.summarizeFeedback(token, { ...(selectedTour ? { tour_id: Number(selectedTour.id) } : {}), max_feedback: 50 });
+        result = await api.summarizeFeedback({ ...(selectedTour ? { tour_id: Number(selectedTour.id) } : {}), max_feedback: 50 });
         const summary = result as { count: number };
         answer = summary.count ? "Mình đã tổng hợp các phản hồi liên quan. Đây là những điểm nổi bật:" : "Chưa có phản hồi trong phạm vi bạn chọn. Hãy thử tổng hợp tất cả tour.";
       }

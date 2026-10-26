@@ -6,7 +6,7 @@
 
 - **Frontend:** React 18, TypeScript, Vite, Tailwind CSS 4, Lucide React; giao diện responsive, dạng ứng dụng điều hành.
 - **Backend:** Python 3.10+, FastAPI, SQLAlchemy 2 và SQLite.
-- **Đăng nhập:** tài khoản demo theo vai trò; JWT hết hạn sau 8 giờ. API kiểm tra quyền ở máy chủ.
+- **Đăng nhập:** tài khoản nội bộ, mật khẩu băm BCrypt, JWT 8 giờ trong cookie `HttpOnly`; API kiểm tra vai trò từ cơ sở dữ liệu.
 - **Dữ liệu:** SQLite, tự tạo bảng và nạp dữ liệu mẫu khi backend khởi động lần đầu.
 - **AI:** khuyến nghị tour được lọc trực tiếp từ tour, lịch khởi hành và số chỗ trong cơ sở dữ liệu. Tạo nội dung/tóm tắt dùng bản dự phòng xác định khi chưa cấu hình nhà cung cấp AI.
 
@@ -28,8 +28,7 @@ Mở PowerShell tại thư mục dự án:
 npm install
 Copy-Item .env.example backend\.env
 # Sửa backend\.env: đặt JWT_SECRET thành chuỗi ngẫu nhiên riêng (ít nhất 32 ký tự)
-# và DEMO_PASSWORD thành mật khẩu development riêng (ít nhất 12 ký tự).
-# APP_ENV=development chỉ dùng cho demo cục bộ; production không bật tài khoản demo.
+# và INITIAL_ADMIN_PASSWORD thành mật khẩu quản trị riêng (tối thiểu 12 ký tự).
 Set-Location backend
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -53,17 +52,13 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Thay `JWT_SECRET` mặc định bằng giá trị này cho mọi môi trường dùng chung hoặc triển khai thật.
 
-## Tài khoản demo
+## Tài khoản nội bộ
 
-Mật khẩu dùng thử được cấu hình riêng qua `DEMO_PASSWORD` trong `backend\.env`; không dùng mật khẩu công khai/chung.
+Khi cơ sở dữ liệu chưa có tài khoản, lần khởi động đầu tiên cần `INITIAL_ADMIN_USERNAME` và `INITIAL_ADMIN_PASSWORD` để tạo quản trị viên. Đổi giá trị mẫu trong `backend\.env` trước lần chạy đầu; mật khẩu phải dài ít nhất 12 ký tự và tối đa 72 byte. Sau khi tạo tài khoản, có thể bỏ hai biến khởi tạo khỏi môi trường; nếu vẫn giữ, chúng không ghi đè tài khoản hiện có.
 
-| Tên đăng nhập | Vai trò | Quyền chính |
-|---|---|---|
-| `admin` | Quản trị viên | Toàn quyền quản lý và truy cập |
-| `tuvan` | Tư vấn viên | Tour, điểm đến, lịch trình, lịch khởi hành, khách hàng, đơn, hướng dẫn viên, phân công, phản hồi |
-| `ketoan` | Kế toán | Đơn, khách hàng, thanh toán; xem tour và lịch khởi hành để đối soát |
+Quản trị viên đăng nhập, mở **Tài khoản** ở thanh điều hướng, rồi tạo người dùng cho nhân viên với một trong các vai trò `admin`, `consultant`, `accountant`. Mật khẩu được băm BCrypt; giao diện/API không trả hash. Quản trị viên có thể đổi vai trò, đặt lại mật khẩu hoặc khóa tài khoản. Không thể khóa/hạ quyền tài khoản đang sử dụng hoặc vô hiệu hóa quản trị viên cuối cùng.
 
-Các tên người dùng trên chỉ có hiệu lực khi `APP_ENV=development`. Backend từ chối toàn bộ đăng nhập demo ở `APP_ENV=production`. Trước triển khai thương mại, tích hợp nhà cung cấp danh tính/người dùng thực, mật khẩu đã băm và quy trình cấp/thu hồi tài khoản.
+JWT chỉ được gửi trong cookie `HttpOnly`, `SameSite=Lax` ở development và `SameSite=None; Secure` ở production. Frontend không lưu token trong `localStorage`. Mỗi API request đã xác thực kiểm tra tài khoản/vai trò hiện hành trong SQLite, do đó thay đổi quyền hoặc khóa tài khoản có hiệu lực ngay. Request ghi từ trình duyệt có `Origin` phải khớp với origin frontend được tin cậy.
 
 ## Cấu hình
 
@@ -71,10 +66,11 @@ Sao chép `.env.example` thành `backend\.env`:
 
 | Biến | Mô tả |
 |---|---|
-| `APP_ENV` | `development` bật tài khoản demo; mặc định `production` và luôn tắt đăng nhập demo |
+| `APP_ENV` | `development` dùng cookie không Secure cho máy local; `production` yêu cầu HTTPS và bật cookie Secure |
 | `DATABASE_URL` | Mặc định `sqlite:///./viettour.db`; đường dẫn tương đối theo thư mục backend |
 | `JWT_SECRET` | Bắt buộc mọi môi trường; chuỗi ngẫu nhiên riêng tối thiểu 32 ký tự. Backend dừng khởi động khi khóa vắng mặt, quá ngắn hoặc là placeholder |
-| `DEMO_PASSWORD` | Bắt buộc tối thiểu 12 ký tự chỉ trong development; cấu hình riêng, không lưu ở frontend/repository |
+| `INITIAL_ADMIN_USERNAME` | Tên đăng nhập dùng để khởi tạo quản trị viên đầu tiên khi cơ sở dữ liệu chưa có tài khoản |
+| `INITIAL_ADMIN_PASSWORD` | Mật khẩu ban đầu, cần thiết chỉ khi khởi tạo; tối thiểu 12 ký tự, không lưu trong frontend/repository |
 | `AI_API_KEY` | Tùy chọn; chỉ lưu ở backend, tuyệt đối không đưa vào biến `VITE_*` |
 | `AI_MODEL` | Mô hình tương thích Chat Completions |
 | `AI_BASE_URL` | Endpoint nhà cung cấp tương thích OpenAI |
@@ -83,7 +79,7 @@ Sao chép `.env.example` thành `backend\.env`:
 
 Không cần khóa AI để chạy ứng dụng. Nếu nhà cung cấp AI được bật nhưng lỗi, backend trả lỗi rõ ràng; không che lỗi bằng câu trả lời dự phòng. AI không được quyết định giá/đợt khởi hành: khuyến nghị luôn lấy dữ liệu tour thực tế từ SQLite.
 
-**Xác thực production:** backend này chỉ cung cấp tài khoản demo cho development, không có hệ thống người dùng production. Trước khi public ứng dụng, tích hợp nhà cung cấp danh tính thật và kiểm thử lại việc cấp vai trò. Không chỉ đặt `APP_ENV=production` rồi kỳ vọng tài khoản demo tiếp tục đăng nhập.
+**Rate limiting:** giới hạn đăng nhập 5 lần/phút và AI 20 lần/phút theo địa chỉ IP, hiện lưu trong bộ nhớ của mỗi tiến trình backend. Với triển khai nhiều worker/replica hoặc sau reverse proxy, cấu hình giới hạn tương ứng ở API gateway/WAF để có giới hạn dùng chung; không tin `X-Forwarded-For` nếu proxy chưa được cấu hình tin cậy.
 
 ## Ràng buộc dữ liệu
 
@@ -104,14 +100,14 @@ Set-Location ..
 npm run build
 ```
 
-Kiểm thử backend tập trung vào giữ chỗ/vượt sức chứa, số chỗ còn lại và giải phóng chỗ sau hủy, giới hạn thanh toán và fallback AI không có khóa.
+Kiểm thử backend bao gồm giữ chỗ/vượt sức chứa, thanh toán, fallback AI, BCrypt, cookie HttpOnly, tài khoản bị khóa, cập nhật vai trò tức thời, ngăn tự khóa/khóa quản trị viên cuối cùng và rate limiting.
 
 ## Triển khai
 
 1. Build frontend bằng `npm run build`; triển khai thư mục `dist` lên static hosting. Đặt `VITE_API_URL` thành URL backend trước khi build.
-2. Triển khai FastAPI riêng, cài `backend\requirements.txt`, đặt biến môi trường bảo mật (`DATABASE_URL`, `JWT_SECRET`, `FRONTEND_ORIGIN`, và tùy chọn `AI_API_KEY`/`AI_MODEL`/`AI_BASE_URL`).
+2. Triển khai FastAPI riêng, cài `backend\requirements.txt`, đặt biến môi trường bảo mật (`DATABASE_URL`, `JWT_SECRET`, `INITIAL_ADMIN_USERNAME`, `INITIAL_ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, và tùy chọn `AI_API_KEY`/`AI_MODEL`/`AI_BASE_URL`).
 3. Dùng HTTPS, giới hạn mạng truy cập API, lưu SQLite trên ổ đĩa bền vững và có kế hoạch backup. Không đưa `.env`, khóa AI, JWT secret hay cơ sở dữ liệu chứa thông tin khách hàng vào image/frontend.
-4. Tài khoản đăng nhập hiện chỉ phục vụ demo. Trước khi mở cho khách hàng thật, thay bằng xác thực và quản trị người dùng đúng chuẩn; bổ sung rate limiting, logging/giám sát, chính sách riêng tư và migration schema.
+4. Bật HTTPS cho cả frontend/backend để cookie phiên production hoạt động; đặt `FRONTEND_ORIGIN` chính xác và thay mật khẩu quản trị mẫu trước lần khởi động đầu tiên.
 
 ## Sao lưu và khôi phục SQLite
 

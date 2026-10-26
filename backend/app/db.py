@@ -1,4 +1,5 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import settings
@@ -15,6 +16,18 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 class Base(DeclarativeBase):
     pass
+
+
+def ensure_account_session_version(database_engine: Engine = engine) -> None:
+    inspector = inspect(database_engine)
+    if "accounts" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("accounts")}
+    if "session_version" not in columns:
+        with database_engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE accounts ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0"
+            ))
 
 
 def get_db():

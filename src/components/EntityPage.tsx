@@ -43,14 +43,13 @@ type Props = {
   resource: ResourceName;
   rows: Row[];
   datasets: Record<string, Row[]>;
-  token: string;
   role: User["role"];
   busy: boolean;
   onReload: () => Promise<void>;
   onToast: (message: string, kind?: "success" | "error") => void;
 };
 
-export default function EntityPage({ resource, rows, datasets, token, role, busy, onReload, onToast }: Props) {
+export default function EntityPage({ resource, rows, datasets, role, busy, onReload, onToast }: Props) {
   const [query, setQuery] = useState("");
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<Row | undefined>();
@@ -88,8 +87,8 @@ export default function EntityPage({ resource, rows, datasets, token, role, busy
 
   async function save(payload: Record<string, string | number>) {
     try {
-      if (editing) await api.update(token, resource, Number(editing.id), payload);
-      else await api.create(token, resource, payload);
+      if (editing) await api.update(resource, Number(editing.id), payload);
+      else await api.create(resource, payload);
       await onReload();
       setModal(false);
       setEditing(undefined);
@@ -105,8 +104,8 @@ export default function EntityPage({ resource, rows, datasets, token, role, busy
     const { action, row } = confirmation;
     setPending(true);
     try {
-      if (action === "delete") await api.remove(token, resource, Number(row.id));
-      else await api.cancelBooking(token, Number(row.id));
+      if (action === "delete") await api.remove(resource, Number(row.id));
+      else await api.cancelBooking(Number(row.id));
       await onReload();
       onToast(action === "delete" ? "Đã xóa thành công." : "Đã hủy đơn và cập nhật số chỗ.");
       setConfirmation(null);
