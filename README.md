@@ -27,6 +27,9 @@ Mở PowerShell tại thư mục dự án:
 ```powershell
 npm install
 Copy-Item .env.example backend\.env
+# Sửa backend\.env: đặt JWT_SECRET thành chuỗi ngẫu nhiên riêng (ít nhất 32 ký tự)
+# và DEMO_PASSWORD thành mật khẩu development riêng (ít nhất 12 ký tự).
+# APP_ENV=development chỉ dùng cho demo cục bộ; production không bật tài khoản demo.
 Set-Location backend
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -52,7 +55,7 @@ Thay `JWT_SECRET` mặc định bằng giá trị này cho mọi môi trường 
 
 ## Tài khoản demo
 
-Mật khẩu chung: `VietTour@2025`
+Mật khẩu dùng thử được cấu hình riêng qua `DEMO_PASSWORD` trong `backend\.env`; không dùng mật khẩu công khai/chung.
 
 | Tên đăng nhập | Vai trò | Quyền chính |
 |---|---|---|
@@ -60,7 +63,7 @@ Mật khẩu chung: `VietTour@2025`
 | `tuvan` | Tư vấn viên | Tour, điểm đến, lịch trình, lịch khởi hành, khách hàng, đơn, hướng dẫn viên, phân công, phản hồi |
 | `ketoan` | Kế toán | Đơn, khách hàng, thanh toán; xem tour và lịch khởi hành để đối soát |
 
-Đây là tài khoản thử nghiệm cố định, không dùng mật khẩu demo cho dữ liệu thực. Trước triển khai thương mại, thay cơ chế demo bằng danh tính người dùng lưu trữ an toàn, mật khẩu đã băm và quy trình cấp/thu hồi tài khoản.
+Các tên người dùng trên chỉ có hiệu lực khi `APP_ENV=development`. Backend từ chối toàn bộ đăng nhập demo ở `APP_ENV=production`. Trước triển khai thương mại, tích hợp nhà cung cấp danh tính/người dùng thực, mật khẩu đã băm và quy trình cấp/thu hồi tài khoản.
 
 ## Cấu hình
 
@@ -68,8 +71,10 @@ Sao chép `.env.example` thành `backend\.env`:
 
 | Biến | Mô tả |
 |---|---|
+| `APP_ENV` | `development` bật tài khoản demo; mặc định `production` và luôn tắt đăng nhập demo |
 | `DATABASE_URL` | Mặc định `sqlite:///./viettour.db`; đường dẫn tương đối theo thư mục backend |
-| `JWT_SECRET` | Khóa ký token; đặt chuỗi ngẫu nhiên dài, riêng tư |
+| `JWT_SECRET` | Bắt buộc mọi môi trường; chuỗi ngẫu nhiên riêng tối thiểu 32 ký tự. Backend dừng khởi động khi khóa vắng mặt, quá ngắn hoặc là placeholder |
+| `DEMO_PASSWORD` | Bắt buộc tối thiểu 12 ký tự chỉ trong development; cấu hình riêng, không lưu ở frontend/repository |
 | `AI_API_KEY` | Tùy chọn; chỉ lưu ở backend, tuyệt đối không đưa vào biến `VITE_*` |
 | `AI_MODEL` | Mô hình tương thích Chat Completions |
 | `AI_BASE_URL` | Endpoint nhà cung cấp tương thích OpenAI |
@@ -77,6 +82,8 @@ Sao chép `.env.example` thành `backend\.env`:
 | `VITE_API_URL` | Tùy chọn ở thời điểm build frontend; URL API có hậu tố `/api` |
 
 Không cần khóa AI để chạy ứng dụng. Nếu nhà cung cấp AI được bật nhưng lỗi, backend trả lỗi rõ ràng; không che lỗi bằng câu trả lời dự phòng. AI không được quyết định giá/đợt khởi hành: khuyến nghị luôn lấy dữ liệu tour thực tế từ SQLite.
+
+**Xác thực production:** backend này chỉ cung cấp tài khoản demo cho development, không có hệ thống người dùng production. Trước khi public ứng dụng, tích hợp nhà cung cấp danh tính thật và kiểm thử lại việc cấp vai trò. Không chỉ đặt `APP_ENV=production` rồi kỳ vọng tài khoản demo tiếp tục đăng nhập.
 
 ## Ràng buộc dữ liệu
 

@@ -16,13 +16,13 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, SessionLocal, engine, get_db
 from .models import Assignment, Booking, Customer, Departure, Destination, Feedback, Guide, Itinerary, Payment, Tour
-from .schemas import BookingCreate, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
+from .schemas import BookingCreate, LoginRequest, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
 
 ALGORITHM = "HS256"
 DEMO_USERS = {
-    "admin": {"password": "VietTour@2025", "name": "Nguyễn Minh Anh", "role": "admin"},
-    "tuvan": {"password": "VietTour@2025", "name": "Trần Hoàng Yến", "role": "consultant"},
-    "ketoan": {"password": "VietTour@2025", "name": "Lê Quốc Bảo", "role": "accountant"},
+    "admin": {"name": "Nguyễn Minh Anh", "role": "admin"},
+    "tuvan": {"name": "Trần Hoàng Yến", "role": "consultant"},
+    "ketoan": {"name": "Lê Quốc Bảo", "role": "accountant"},
 }
 ROLE_LABELS = {"admin": "Quản trị viên", "consultant": "Tư vấn viên", "accountant": "Kế toán"}
 RESOURCE_MODELS = {
@@ -83,6 +83,19 @@ def validate_input(model: Any, data: dict[str, Any]):
         return model.model_validate(data)
     except ValidationError as error:
         raise HTTPException(status_code=422, detail="Dữ liệu không hợp lệ. Vui lòng kiểm tra lại các trường bắt buộc và giới hạn nhập.") from error
+
+
+def validate_security_settings() -> None:
+    secret = settings.jwt_secret.strip()
+    placeholders = {
+        "development-only-change-me",
+        "replace-with-a-long-random-secret",
+        "replace-with-a-random-secret-of-at-least-32-characters",
+    }
+    if len(secret) < 32 or secret.casefold() in placeholders:
+        raise RuntimeError("JWT_SECRET phải là khóa ngẫu nhiên riêng tối thiểu 32 ký tự; hãy cấu hình biến môi trường trước khi chạy.")
+    if settings.app_env == "development" and len(settings.demo_password) < 12:
+        raise RuntimeError("Trong development, DEMO_PASSWORD phải được cấu hình với tối thiểu 12 ký tự.")
 
 
 def serialize(item: Any) -> dict[str, Any]:
@@ -197,6 +210,7 @@ def seed_database() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    validate_security_settings()
     seed_database()
     yield
 
@@ -217,10 +231,12 @@ def health():
 
 
 @app.post("/api/auth/login")
-def login(payload: dict[str, str]):
-    username, password = payload.get("username", ""), payload.get("password", "")
+def login(payload: LoginRequest):
+    if settings.app_env != "development":
+        raise HTTPException(status_code=403, detail="Đăng nhập demo đã bị tắt. Hãy cấu hình nhà cung cấp danh tính cho môi trường này.")
+    username, password = payload.username, payload.password
     account = DEMO_USERS.get(username)
-    if account is None or not secrets.compare_digest(password, account["password"]):
+    if account is None or not secrets.compare_digest(password, settings.demo_password):
         raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không chính xác")
     token = jwt.encode(
         {"sub": username, "role": account["role"], "name": account["name"],

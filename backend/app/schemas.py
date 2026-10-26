@@ -6,6 +6,11 @@ class InputModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LoginRequest(InputModel):
+    username: str = Field(min_length=1, max_length=40)
+    password: str = Field(min_length=1, max_length=256)
+
+
 class BookingCreate(InputModel):
     customer_id: int
     departure_id: int

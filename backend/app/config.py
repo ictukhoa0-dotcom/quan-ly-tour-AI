@@ -1,9 +1,13 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./viettour.db"
-    jwt_secret: str = "development-only-change-me"
+    app_env: Literal["development", "production"] = "production"
+    jwt_secret: str = ""
+    demo_password: str = ""
     ai_api_key: str = ""
     ai_model: str = "gpt-4o-mini"
     ai_base_url: str = "https://api.openai.com/v1"

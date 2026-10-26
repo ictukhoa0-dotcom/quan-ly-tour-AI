@@ -6,9 +6,12 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import ai_status, cancel_booking, create_booking, create_payment, generate_tour_content, remaining_seats, validate_input
+from app.main import (
+    ai_status, cancel_booking, create_booking, create_payment, generate_tour_content,
+    login, remaining_seats, validate_input, validate_security_settings,
+)
 from app.models import Booking, Customer, Departure, Destination, Payment, Tour
-from app.schemas import BookingCreate, PaymentCreate, TourGenerationRequest
+from app.schemas import BookingCreate, LoginRequest, PaymentCreate, TourGenerationRequest
 from app.config import settings
 
 
@@ -113,3 +116,45 @@ def test_invalid_booking_payload_has_api_validation_error():
         validate_input(BookingCreate, {"customer_id": 1, "departure_id": 1, "seats": 0})
     assert error.value.status_code == 422
     assert "Dữ liệu không hợp lệ" in error.value.detail
+
+
+def test_startup_rejects_missing_or_placeholder_jwt_secret(monkeypatch):
+    monkeypatch.setattr(settings, "jwt_secret", "")
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        validate_security_settings()
+
+    monkeypatch.setattr(settings, "jwt_secret", "replace-with-a-random-secret-of-at-least-32-characters")
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        validate_security_settings()
+
+
+def test_startup_accepts_configured_secret_and_requires_private_demo_password(monkeypatch):
+    monkeypatch.setattr(settings, "jwt_secret", "a-private-random-secret-with-at-least-32-characters")
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "demo_password", "")
+    validate_security_settings()
+
+    monkeypatch.setattr(settings, "app_env", "development")
+    with pytest.raises(RuntimeError, match="DEMO_PASSWORD"):
+        validate_security_settings()
+
+    monkeypatch.setattr(settings, "demo_password", "private-local-demo-password")
+    validate_security_settings()
+
+
+def test_demo_login_is_disabled_outside_development(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    with pytest.raises(HTTPException) as error:
+        login(LoginRequest(username="admin", password="any-password"))
+    assert error.value.status_code == 403
+
+
+def test_demo_login_uses_environment_password_only_in_development(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "development")
+    monkeypatch.setattr(settings, "demo_password", "private-local-demo-password")
+    response = login(LoginRequest(username="admin", password="private-local-demo-password"))
+    assert response["user"]["role"] == "admin"
+
+    with pytest.raises(HTTPException) as error:
+        login(LoginRequest(username="admin", password="wrong-development-password"))
+    assert error.value.status_code == 401
