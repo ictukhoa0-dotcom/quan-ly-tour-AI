@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bell, Check, ChevronDown, LogOut, Search, X } from "lucide-react";
-import { api } from "./api";
+import { Bell, Check, ChevronDown, LogOut, Moon, Search, Sun, X } from "lucide-react";
+import { api, type ListFilters } from "./api";
 import { navItems } from "./data";
 import type { DashboardData, ResourceName, Row, User } from "./types";
 import Sidebar from "./components/Sidebar";
@@ -33,6 +33,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; kind: "success" | "error" } | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("viettour-theme") === "dark");
 
   const notify = useCallback((message: string, kind: "success" | "error" = "success") => {
     setToast({ message, kind });
@@ -45,7 +46,9 @@ export default function App() {
       const readable = roleResources[role];
       const [overview, ...collections] = await Promise.all([
         api.dashboard(),
-        ...readable.map((key) => api.list(key)),
+        ...readable.map((key) => key === "customers" || key === "bookings"
+          ? api.listPage(key, { page: 1, limit: 20 }).then((result) => result.items)
+          : api.list(key)),
       ]);
       setDashboard(overview);
       const next = { ...emptyData };
@@ -58,6 +61,14 @@ export default function App() {
       setLoading(false);
     }
   }, [notify]);
+
+  const loadPage = useCallback((resource: "customers" | "bookings", filters: ListFilters) =>
+    api.listPage(resource, filters), []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("viettour-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
 
   useEffect(() => {
     let alive = true;
@@ -116,12 +127,12 @@ export default function App() {
   const content = active === "dashboard" ? <Dashboard data={dashboard} loading={loading} onNavigate={setActive} onNewBooking={() => setActive("bookings")} />
     : active === "ai" ? <AiStudio tours={data.tours} onToast={notify} />
       : active === "users" ? <UserManagement currentUser={user} onToast={notify} onPasswordChanged={logout} />
-        : <EntityPage resource={active as ResourceName} rows={data[active as ResourceName]} datasets={data} role={user.role} busy={loading} onReload={reload} onToast={notify} />;
+        : <EntityPage resource={active as ResourceName} rows={data[active as ResourceName]} datasets={data} role={user.role} busy={loading} onReload={reload} onLoadPage={loadPage} onToast={notify} />;
 
   return <main className="app-shell">
     <Sidebar active={active} user={user} open={sidebarOpen} onNavigate={setActive} onClose={() => setSidebarOpen(false)} onToggle={() => setSidebarOpen((value) => !value)} />
     <section className="main-shell">
-      <header className="topbar"><div className="breadcrumb"><span>VietTour Travel</span><i>/</i><strong>{activeItem?.label ?? "Tổng quan"}</strong></div><div className="topbar-actions"><label className="global-search"><Search size={16} /><input aria-label="Tìm kiếm nhanh" placeholder="Tìm kiếm..." /><kbd>⌘ K</kbd></label><button className="notification-button" aria-label="Thông báo"><Bell size={18} /><i /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><span className="profile-avatar">{user.name.charAt(0)}</span><span className="profile-details"><strong>{user.name}</strong><small>{user.role_label}</small></span><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu"><div><strong>{user.name}</strong><small>{user.role_label}</small></div><button onClick={logout}><LogOut size={15} /> Đăng xuất</button></div>}</div></div></header>
+      <header className="topbar"><div className="breadcrumb"><span>VietTour Travel</span><i>/</i><strong>{activeItem?.label ?? "Tổng quan"}</strong></div><div className="topbar-actions"><label className="global-search"><Search size={16} /><input aria-label="Tìm kiếm nhanh" placeholder="Tìm kiếm..." /><kbd>⌘ K</kbd></label><button className="theme-toggle" aria-label={darkMode ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối"} title={darkMode ? "Giao diện sáng" : "Giao diện tối"} onClick={() => setDarkMode((value) => !value)}>{darkMode ? <Sun size={18} /> : <Moon size={18} />}</button><button className="notification-button" aria-label="Thông báo"><Bell size={18} /><i /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><span className="profile-avatar">{user.name.charAt(0)}</span><span className="profile-details"><strong>{user.name}</strong><small>{user.role_label}</small></span><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu"><div><strong>{user.name}</strong><small>{user.role_label}</small></div><button onClick={logout}><LogOut size={15} /> Đăng xuất</button></div>}</div></div></header>
       {content}
       <footer className="app-footer"><span>© {new Date().getFullYear()} VietTour AI</span><span>Trải nghiệm du lịch Việt Nam, được vận hành tốt hơn.</span><span><i className="status-dot" /> Tất cả hệ thống hoạt động</span></footer>
     </section>

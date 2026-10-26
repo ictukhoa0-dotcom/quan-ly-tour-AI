@@ -2,6 +2,16 @@ import type { Account, DashboardData, Row, User } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 
+export type PageResult<T> = { items: T[]; total: number; page: number; limit: number };
+export type ListFilters = {
+  page: number;
+  limit: number;
+  search?: string;
+  departure_date?: string;
+  status?: string;
+  payment_status?: string;
+};
+
 export class ApiError extends Error {
   status: number;
 
@@ -38,6 +48,71 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+async function download(path: string): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { credentials: "include" });
+  } catch {
+    throw new ApiError("Không thể kết nối máy chủ. Hãy kiểm tra backend đang chạy.", 0);
+  }
+  if (!response.ok) {
+    const data: unknown = await response.json().catch(() => null);
+    const detail = typeof data === "object" && data !== null && "detail" in data ? data.detail : null;
+    throw new ApiError(typeof detail === "string" ? detail : "Không thể tải tệp.", response.status);
+  }
+  return response.blob();
+}
+
+async function streamAIChat(
+  prompt: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  onToken: (text: string) => void,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}/ai/chat`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, history }),
+    });
+  } catch {
+    throw new ApiError("Không thể kết nối máy chủ. Hãy kiểm tra backend đang chạy.", 0);
+  }
+  if (!response.ok) {
+    const data: unknown = await response.json().catch(() => null);
+    const detail = typeof data === "object" && data !== null && "detail" in data ? data.detail : null;
+    throw new ApiError(typeof detail === "string" ? detail : "Không thể trò chuyện với trợ lý AI.", response.status);
+  }
+  if (!response.body) throw new ApiError("Máy chủ không hỗ trợ truyền dữ liệu trực tuyến.", response.status);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let receivedDone = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const events = buffer.split(/\r?\n\r?\n/);
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      const eventName = event.split(/\r?\n/).find((line) => line.startsWith("event:"))?.slice(6).trim();
+      const dataLine = event.split(/\r?\n/).find((line) => line.startsWith("data:"))?.slice(5).trim();
+      if (!dataLine) continue;
+      const data: unknown = JSON.parse(dataLine);
+      if (eventName === "token" && typeof data === "object" && data !== null && "text" in data && typeof data.text === "string") {
+        onToken(data.text);
+      } else if (eventName === "error" && typeof data === "object" && data !== null && "message" in data && typeof data.message === "string") {
+        throw new ApiError(data.message, 502);
+      } else if (eventName === "done") {
+        receivedDone = true;
+      }
+    }
+    if (done) break;
+  }
+  if (!receivedDone) throw new ApiError("Luồng phản hồi AI kết thúc bất thường.", 502);
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<{ user: User }>("/auth/login", {
@@ -47,6 +122,16 @@ export const api = {
   me: () => request<User>("/me"),
   dashboard: () => request<DashboardData>("/dashboard"),
   list: (resource: string) => request<Row[]>(`/${resource}`),
+  listPage: (resource: "customers" | "bookings", filters: ListFilters) => {
+    const query = new URLSearchParams({ page: String(filters.page), limit: String(filters.limit) });
+    if (filters.search) query.set("search", filters.search);
+    if (filters.departure_date) query.set("departure_date", filters.departure_date);
+    if (filters.status) query.set("status", filters.status);
+    if (filters.payment_status) query.set("payment_status", filters.payment_status);
+    return request<PageResult<Row>>(`/${resource}?${query.toString()}`);
+  },
+  download,
+  streamAIChat,
   create: (resource: string, payload: Record<string, string | number>) =>
     request<Row>(`/${resource}`, { method: "POST", body: JSON.stringify(payload) }),
   update: (resource: string, id: number, payload: Record<string, string | number>) =>

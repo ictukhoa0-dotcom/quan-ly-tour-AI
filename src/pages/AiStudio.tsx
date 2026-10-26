@@ -10,7 +10,7 @@ type Props = {
   tours: Row[];
   onToast: (message: string, kind?: "success" | "error") => void;
 };
-type Mode = "recommendations" | "content" | "feedback";
+type Mode = "recommendations" | "content" | "feedback" | "assistant";
 type Message = {
   id: number;
   role: "assistant" | "user";
@@ -26,11 +26,13 @@ const quickPrompts: Record<Mode, string[]> = {
   recommendations: ["Tìm tour văn hóa dưới 6 triệu", "Gợi ý chuyến đi biển 3 ngày", "Tìm tour khám phá cuối tuần"],
   content: ["Viết nội dung cho tour Hà Giang", "Soạn lịch trình 3 ngày tại Huế", "Tạo bản nháp cho tour đầu tiên"],
   feedback: ["Tóm tắt phản hồi khách hàng", "Khách thích điều gì nhất?", "Tổng hợp đánh giá tour gần đây"],
+  assistant: ["Còn tour Nha Trang nào khởi hành tuần sau không?", "Còn bao nhiêu chỗ ở chuyến đi sắp tới?", "Tìm điểm đến miền Trung"],
 };
 const modeLabels: Record<Mode, string> = {
   recommendations: "Gợi ý hành trình",
   content: "Soạn nội dung",
   feedback: "Lắng nghe khách hàng",
+  assistant: "Hỏi dữ liệu trực tiếp",
 };
 
 function getBudget(text: string): number | undefined {
@@ -122,7 +124,23 @@ export default function AiStudio({ tours, onToast }: Props) {
     try {
       let result: unknown;
       let answer: string;
-      if (currentMode === "recommendations") {
+      if (currentMode === "assistant") {
+        const history = messages
+          .filter((message) => message.id !== 0 && !message.typing && message.text.trim())
+          .slice(-10)
+          .map((message) => ({ role: message.role, content: message.text.slice(0, 2000) }));
+        let streamedText = "";
+        await api.streamAIChat(prompt, history, (chunk) => {
+          streamedText += chunk;
+          setMessages((previous) => previous.map((message) => message.id === pendingId
+            ? { ...message, text: streamedText, typing: true }
+            : message));
+        });
+        setMessages((previous) => previous.map((message) => message.id === pendingId
+          ? { ...message, text: streamedText || "Mình chưa nhận được nội dung trả lời.", typing: false }
+          : message));
+        return;
+      } else if (currentMode === "recommendations") {
         const budget = getBudget(prompt) ?? Number(dailyBudget);
         const duration = prompt.match(/(\d{1,2})\s*(?:ngày|ngay)/i);
         result = await api.recommendations({
@@ -186,7 +204,7 @@ export default function AiStudio({ tours, onToast }: Props) {
             </div>
           </div>
           <div className="ai-chat-modes" role="tablist" aria-label="Chọn tác vụ trợ lý">
-            {(["recommendations", "content", "feedback"] as const).map((option) => <button key={option} role="tab" aria-selected={mode === option} disabled={busy} className={`ai-mode-chip ${mode === option ? "selected" : ""}`} onClick={() => switchMode(option)}>{option === "recommendations" ? <Compass size={14} /> : option === "content" ? <WandSparkles size={14} /> : <Sparkles size={14} />}{modeLabels[option]}</button>)}
+            {(["recommendations", "content", "feedback", "assistant"] as const).map((option) => <button key={option} role="tab" aria-selected={mode === option} disabled={busy} className={`ai-mode-chip ${mode === option ? "selected" : ""}`} onClick={() => switchMode(option)}>{option === "recommendations" || option === "assistant" ? <Compass size={14} /> : option === "content" ? <WandSparkles size={14} /> : <Sparkles size={14} />}{modeLabels[option]}</button>)}
           </div>
           <div ref={scrollRef} className="ai-chat-messages flex flex-col gap-4" aria-live="polite">
             {messages.map((message) => <article key={message.id} className={`chat-message ${message.role === "user" ? "chat-message-user" : "chat-message-assistant"}`}>
@@ -211,6 +229,7 @@ export default function AiStudio({ tours, onToast }: Props) {
             <span className="eyebrow">TRỢ LÝ HỖ TRỢ BẠN</span>
             <h3>Việc gì cũng có thể bắt đầu từ một câu hỏi.</h3>
             <div className="ai-capability"><span><CalendarDays size={15} /></span><div><strong>Tìm hành trình thực tế</strong><p>Gợi ý tour có chỗ trống, giá và lịch thật.</p></div></div>
+            <div className="ai-capability"><span><Compass size={15} /></span><div><strong>Tra cứu dữ liệu trực tiếp</strong><p>AI truy vấn tour, lịch khởi hành và chỗ còn qua công cụ chỉ đọc.</p></div></div>
             <div className="ai-capability"><span><WandSparkles size={15} /></span><div><strong>Soạn bản nháp nhanh</strong><p>Đưa ra ý tưởng lịch trình để đội ngũ duyệt.</p></div></div>
             <div className="ai-capability"><span><Sparkles size={15} /></span><div><strong>Lắng nghe khách hàng</strong><p>Tổng hợp phản hồi trực tiếp từ hệ thống.</p></div></div>
           </section>

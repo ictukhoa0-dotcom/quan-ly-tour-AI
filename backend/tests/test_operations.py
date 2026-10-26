@@ -1,23 +1,29 @@
 import asyncio
+from datetime import date
+from io import BytesIO
+import json
 
 import pytest
 from fastapi import HTTPException, Request, Response
 from fastapi.testclient import TestClient
 from jose import jwt
+from openpyxl import load_workbook
 from sqlalchemy import create_engine, event, inspect, select
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
 from app.db import Base, ensure_account_session_version, get_db
 from app.main import (
-    ALGORITHM, FixedWindowLimiter, ai_status, app, cancel_booking, create_account, create_booking,
-    create_payment, current_user, ensure_initial_admin, generate_tour_content, hash_password, login, public_account,
-    remaining_seats, update_account, validate_input, validate_request_origin, validate_security_settings,
+    ALGORITHM, FixedWindowLimiter, ai_chat, ai_status, app, cancel_booking, create_account, create_booking,
+    create_payment, current_user, ensure_initial_admin, generate_tour_content, hash_password, list_resources,
+    login, public_account, remaining_seats, run_ai_tool, update_account, validate_input, validate_request_origin,
+    validate_security_settings,
     verify_password,
 )
+from app.exports import booking_confirmation_pdf, bookings_workbook, revenue_pdf, revenue_workbook, tours_pdf, tours_workbook
 from app.models import Account, Booking, Customer, Departure, Destination, Payment, Tour
 from app.schemas import (
-    AccountCreate, AccountUpdate, BookingCreate, LoginRequest, PaymentCreate, TourGenerationRequest,
+    AIChatRequest, AccountCreate, AccountUpdate, BookingCreate, LoginRequest, PaymentCreate, TourGenerationRequest,
 )
 
 
@@ -312,3 +318,142 @@ def test_account_session_version_schema_upgrade_for_existing_sqlite(tmp_path):
     columns = {column["name"] for column in inspect(legacy_engine).get_columns("accounts")}
     assert "session_version" in columns
     legacy_engine.dispose()
+
+
+def test_customer_and_booking_server_pagination_filters(db_session):
+    customer = Customer(name="Nguyễn Bình", phone="0900000002", email="binh@example.vn", address="Huế")
+    db_session.add(customer)
+    db_session.commit()
+
+    customers = list_resources("customers", page=1, limit=1, search="Nguyễn", db=db_session, user=ADMIN)
+    assert customers["total"] == 2
+    assert len(customers["items"]) == 1
+    assert customers["page"] == 1
+
+    created = create_booking(
+        BookingCreate(customer_id=db_session.scalar(select(Customer.id)),
+                      departure_id=db_session.scalar(select(Departure.id)), seats=1),
+        db_session, ADMIN,
+    )
+    bookings = list_resources(
+        "bookings", page=1, limit=10, search=created["booking_code"],
+        departure_date=date(2099, 8, 15), status="Đã xác nhận", payment_status="Chưa thanh toán",
+        db=db_session, user=ADMIN,
+    )
+    assert bookings["total"] == 1
+    assert bookings["items"][0]["booking_code"] == created["booking_code"]
+
+
+def test_ai_read_only_tools_return_current_destination_and_seats(db_session):
+    tours = run_ai_tool(db_session, "get_available_tours", {"destination": "Huế"})
+    assert len(tours["tours"]) == 1
+    assert tours["tours"][0]["remaining_seats"] == 3
+
+    seats = run_ai_tool(db_session, "check_tour_seats", {"departure_id": tours["tours"][0]["departure_id"]})
+    assert seats["remaining_seats"] == 3
+    assert seats["capacity"] == 3
+
+    destinations = run_ai_tool(db_session, "search_destinations", {"query": "Miền Trung"})
+    assert destinations["destinations"][0]["name"] == "Huế"
+
+
+def test_ai_stream_calls_live_seat_tool_and_streams_answer(db_session, monkeypatch):
+    class FakeResponse:
+        is_error = False
+
+        def __init__(self, lines):
+            self.lines = lines
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def aiter_lines(self):
+            for line in self.lines:
+                yield line
+
+    class FakeClient:
+        requests = []
+
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, _method, _url, **kwargs):
+            self.requests.append(kwargs)
+            if len(self.requests) == 1:
+                initial = {
+                    "choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "id": "call_1", "type": "function",
+                        "function": {"name": "check_tour_seats", "arguments": '{"departure_id":'},
+                    }]}}],
+                }
+                continuation = {
+                    "choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "function": {"arguments": "1}"},
+                    }]}}],
+                }
+                return FakeResponse([
+                    f"data: {json.dumps(initial)}",
+                    f"data: {json.dumps(continuation)}",
+                    "data: [DONE]",
+                ])
+            final = {"choices": [{"delta": {"content": "Còn 3 chỗ."}}]}
+            return FakeResponse([f"data: {json.dumps(final)}", "data: [DONE]"])
+
+    FakeClient.requests = []
+    monkeypatch.setattr(settings, "ai_api_key", "test-provider-key")
+    monkeypatch.setattr("app.main.httpx.AsyncClient", FakeClient)
+    response = asyncio.run(ai_chat(AIChatRequest(prompt="Còn chỗ không?"), db_session, ADMIN))
+
+    async def read_stream():
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    output = asyncio.run(read_stream())
+    assert "Còn 3 chỗ." in output
+    assert "event: done" in output
+    tool_result = json.loads(FakeClient.requests[1]["json"]["messages"][-1]["content"])
+    assert tool_result["remaining_seats"] == 3
+
+
+def test_excel_exports_include_styled_data_and_formula_totals(db_session):
+    customer = db_session.scalar(select(Customer))
+    departure = db_session.scalar(select(Departure))
+    booking = create_booking(
+        BookingCreate(customer_id=customer.id, departure_id=departure.id, seats=1), db_session, ADMIN,
+    )
+    create_payment(PaymentCreate(booking_id=booking["id"], amount=100_000, method="Chuyển khoản"), db_session, ADMIN)
+
+    tour_sheet = load_workbook(BytesIO(tours_workbook(db_session))).active
+    assert tour_sheet["A1"].value == "Tên tour"
+    assert tour_sheet["D3"].value == "=SUM(D2:D2)"
+    assert tour_sheet.freeze_panes == "A2"
+
+    booking_sheet = load_workbook(BytesIO(bookings_workbook(db_session))).active
+    assert booking_sheet["A2"].value == booking["booking_code"]
+    revenue_sheet = load_workbook(BytesIO(revenue_workbook(db_session))).active
+    assert revenue_sheet["D3"].value == "=SUM(D2:D2)"
+
+
+def test_pdf_exports_produce_valid_pdf_documents(db_session):
+    customer = db_session.scalar(select(Customer))
+    departure = db_session.scalar(select(Departure))
+    booking = create_booking(
+        BookingCreate(customer_id=customer.id, departure_id=departure.id, seats=1), db_session, ADMIN,
+    )
+    for document in (
+        tours_pdf(db_session),
+        revenue_pdf(db_session),
+        booking_confirmation_pdf(db_session, booking["id"]),
+    ):
+        assert document.startswith(b"%PDF-")

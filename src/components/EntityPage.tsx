@@ -1,6 +1,9 @@
-import { useMemo, useState } from "react";
-import { CalendarDays, CircleDollarSign, ClipboardPlus, Pencil, Plus, Search, Trash2, Users } from "lucide-react";
-import { api } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  CalendarDays, ChevronLeft, ChevronRight, CircleDollarSign, ClipboardPlus, FileDown,
+  Pencil, Plus, Printer, Search, Trash2, Users,
+} from "lucide-react";
+import { api, type ListFilters, type PageResult } from "../api";
 import { canWrite, resourceFields, resourceTitles } from "../data";
 import type { Field, ResourceName, Row, User } from "../types";
 import ConfirmDialog from "./ConfirmDialog";
@@ -46,17 +49,54 @@ type Props = {
   role: User["role"];
   busy: boolean;
   onReload: () => Promise<void>;
+  onLoadPage: (resource: "customers" | "bookings", filters: ListFilters) => Promise<PageResult<Row>>;
   onToast: (message: string, kind?: "success" | "error") => void;
 };
 
-export default function EntityPage({ resource, rows, datasets, role, busy, onReload, onToast }: Props) {
+export default function EntityPage({ resource, rows, datasets, role, busy, onReload, onLoadPage, onToast }: Props) {
   const [query, setQuery] = useState("");
+  const [departureDate, setDepartureDate] = useState("");
+  const [bookingStatus, setBookingStatus] = useState("");
+  const [paymentStatus, setPaymentStatus] = useState("");
+  const [page, setPage] = useState(1);
+  const [serverPage, setServerPage] = useState<PageResult<Row> | null>(null);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [relatedRows, setRelatedRows] = useState<Record<string, Row[]>>({});
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<Row | undefined>();
   const [confirmation, setConfirmation] = useState<{ action: "delete" | "cancel"; row: Row } | null>(null);
   const [pending, setPending] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const writable = canWrite(resource, role);
-  const list = useMemo(() => rows.filter((row) => Object.values(row).some((value) => String(value ?? "").toLocaleLowerCase("vi").includes(query.toLocaleLowerCase("vi")))), [rows, query]);
+  const serverPaginated = resource === "customers" || resource === "bookings";
+  const filteredRows = useMemo(() => rows.filter((row) => Object.values(row).some((value) => String(value ?? "").toLocaleLowerCase("vi").includes(query.toLocaleLowerCase("vi")))), [rows, query]);
+  const list = serverPaginated ? serverPage?.items ?? [] : filteredRows;
+  const totalRows = serverPaginated ? serverPage?.total ?? rows.length : rows.length;
+  const pageCount = serverPaginated ? Math.max(1, Math.ceil(totalRows / 20)) : 1;
+  const formDatasets = { ...datasets, ...relatedRows };
+
+  useEffect(() => {
+    if (!serverPaginated) {
+      setServerPage(null);
+      setPageLoading(false);
+      return;
+    }
+    let active = true;
+    setPageLoading(true);
+    const filters: ListFilters = { page, limit: 20, search: query };
+    if (resource === "bookings" && departureDate) filters.departure_date = departureDate;
+    if (resource === "bookings" && bookingStatus) filters.status = bookingStatus;
+    if (resource === "bookings" && paymentStatus) filters.payment_status = paymentStatus;
+    onLoadPage(resource, filters).then((result) => {
+      if (active) setServerPage(result);
+    }).catch((error: unknown) => {
+      if (active) onToast(error instanceof Error ? error.message : "Không thể tải trang dữ liệu.", "error");
+    }).finally(() => {
+      if (active) setPageLoading(false);
+    });
+    return () => { active = false; };
+  }, [resource, serverPaginated, page, query, departureDate, bookingStatus, paymentStatus, rows, onLoadPage, onToast]);
+
   const fields: Field[] = useMemo(() => resourceFields[resource].map((field) => {
     const sources: Record<string, { source: string; label: string } | undefined> = {
       destination_id: { source: "destinations", label: "name" },
@@ -68,7 +108,7 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
     };
     const source = sources[field.key];
     if (!source) return field;
-    const options = (datasets[source.source] ?? []).filter((item) => {
+    const options = (formDatasets[source.source] ?? []).filter((item) => {
       if (field.key === "departure_id") return item.status === "Đang mở" && Number(item.remaining_seats) > 0 && String(item.departure_date) >= new Date().toISOString().slice(0, 10);
       if (field.key === "booking_id") return item.status !== "Đã hủy" && Number(item.amount_due) > 0;
       return true;
@@ -83,7 +123,7 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
           : field.key === "booking_id" ? ` · còn nợ ${money(Number(item.amount_due))}` : ""),
       })),
     };
-  }), [resource, datasets]);
+  }), [resource, datasets, relatedRows]);
 
   async function save(payload: Record<string, string | number>) {
     try {
@@ -116,6 +156,46 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
     }
   }
 
+  async function downloadFile(path: string, filename: string, preview = false) {
+    const previewWindow = preview ? window.open("", "_blank") : null;
+    setExporting(true);
+    try {
+      const blob = await api.download(path);
+      const url = URL.createObjectURL(blob);
+      if (previewWindow) {
+        previewWindow.location.href = url;
+      } else {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.append(anchor);
+        anchor.click();
+        anchor.remove();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      previewWindow?.close();
+      onToast(error instanceof Error ? error.message : "Không thể xuất tệp.", "error");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function openCreateForm() {
+    setEditing(undefined);
+    if (resource === "bookings" || resource === "payments") {
+      const relatedResource = resource === "bookings" ? "customers" : "bookings";
+      try {
+        const related = await api.list(relatedResource);
+        setRelatedRows((current) => ({ ...current, [relatedResource]: related }));
+      } catch (error) {
+        onToast(error instanceof Error ? error.message : "Không thể tải dữ liệu biểu mẫu.", "error");
+        return;
+      }
+    }
+    setModal(true);
+  }
+
   const createOnly = resource === "bookings" || resource === "payments";
   const showCreate = writable;
   const createLabel = resource === "bookings" ? "Tạo đơn đặt tour" : resource === "payments" ? "Ghi nhận thanh toán" : "Thêm mới";
@@ -123,9 +203,17 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
 
   return (
     <div className="page-content entity-page">
-      <div className="entity-heading"><div><span className="eyebrow">QUẢN LÝ VẬN HÀNH</span><h2>{resourceTitles[resource]}</h2><p>{descriptions[resource]}</p></div>{showCreate && <button className="button button-primary" onClick={() => { setEditing(undefined); setModal(true); }}><Icon size={17} /> {createLabel}</button>}</div>
+      <div className="entity-heading"><div><span className="eyebrow">QUẢN LÝ VẬN HÀNH</span><h2>{resourceTitles[resource]}</h2><p>{descriptions[resource]}</p></div><div className="entity-heading-actions">
+        {resource === "tours" && <><button className="button button-secondary" disabled={exporting} onClick={() => void downloadFile("/export/tours", "viettour-tours.xlsx")}><FileDown size={16} /> Xuất Excel</button><button className="button button-secondary" disabled={exporting} onClick={() => void downloadFile("/export/tours/pdf", "viettour-tours.pdf", true)}><Printer size={16} /> In file PDF</button></>}
+        {resource === "bookings" && <><button className="button button-secondary" disabled={exporting} onClick={() => void downloadFile("/export/bookings", "viettour-bookings.xlsx")}><FileDown size={16} /> Xuất Excel</button>{showCreate && <button className="button button-primary" onClick={() => void openCreateForm()}><Icon size={17} /> {createLabel}</button>}</>}
+        {resource === "payments" && <><button className="button button-secondary" disabled={exporting} onClick={() => void downloadFile("/export/revenue", "viettour-revenue.xlsx")}><FileDown size={16} /> Xuất Excel</button><button className="button button-secondary" disabled={exporting} onClick={() => void downloadFile("/export/revenue/pdf", "viettour-revenue.pdf", true)}><Printer size={16} /> In file PDF</button></>}
+        {showCreate && resource !== "bookings" && <button className="button button-primary" onClick={() => void openCreateForm()}><Icon size={17} /> {createLabel}</button>}
+      </div></div>
       <section className="panel entity-panel">
-        <div className="table-toolbar"><div><strong>{rows.length}</strong><span> mục dữ liệu</span></div><label className="search-box"><Search size={16} /><input aria-label="Tìm kiếm" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm kiếm..." /></label></div>
+        <div className="table-toolbar"><div><strong>{totalRows}</strong><span> mục dữ liệu</span></div><div className="table-filters">
+          {resource === "bookings" && <><label className="filter-field"><span>Khởi hành</span><input aria-label="Lọc theo ngày khởi hành" type="date" value={departureDate} onChange={(event) => { setDepartureDate(event.target.value); setPage(1); }} /></label><label className="filter-field"><span>Trạng thái đơn</span><select aria-label="Lọc theo trạng thái đơn" value={bookingStatus} onChange={(event) => { setBookingStatus(event.target.value); setPage(1); }}><option value="">Tất cả đơn</option><option value="Đã xác nhận">Đã xác nhận</option><option value="Chờ xác nhận">Chờ xác nhận</option><option value="Đã hủy">Đã hủy</option></select></label><label className="filter-field"><span>Thanh toán</span><select aria-label="Lọc theo trạng thái thanh toán" value={paymentStatus} onChange={(event) => { setPaymentStatus(event.target.value); setPage(1); }}><option value="">Tất cả thanh toán</option><option value="Chưa thanh toán">Chưa thanh toán</option><option value="Thanh toán một phần">Thanh toán một phần</option><option value="Đã thanh toán">Đã thanh toán</option></select></label></>}
+          <label className="search-box"><Search size={16} /><input aria-label="Tìm kiếm" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Tìm kiếm..." /></label>
+        </div></div>
         <div className="table-wrap"><table><thead><tr>{columns[resource].map(([key, label]) => <th key={key}>{label}</th>)}{writable && <th className="actions-head">Thao tác</th>}</tr></thead>
           <tbody>
             {list.map((row) => <tr key={row.id}>
@@ -138,15 +226,16 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
                 key === "status" ? <span className={`status-pill ${row[key] === "Đã hủy" ? "status-red" : row[key] === "Chờ xác nhận" ? "status-amber" : "status-green"}`}>{row[key]}</span> :
                 row[key] ?? "—"}</td>)}
               {writable && <td><div className="row-actions">
+                {resource === "bookings" && <button className="icon-button small-icon" disabled={exporting} aria-label="In phiếu xác nhận PDF" title="In phiếu xác nhận PDF" onClick={() => void downloadFile(`/export/bookings/${row.id}/pdf`, `booking-${row.id}.pdf`, true)}><Printer size={15} /></button>}
                 {resource === "bookings" && row.status !== "Đã hủy" && <button className="text-action action-danger" disabled={pending} onClick={() => setConfirmation({ action: "cancel", row })}>Hủy đơn</button>}
                 {!createOnly && <><button className="icon-button small-icon" disabled={pending} aria-label="Chỉnh sửa" title="Chỉnh sửa" onClick={() => { setEditing(row); setModal(true); }}><Pencil size={15} /></button><button className="icon-button small-icon delete-action" disabled={pending} aria-label="Xóa" title="Xóa" onClick={() => setConfirmation({ action: "delete", row })}><Trash2 size={15} /></button></>}
               </div></td>}
             </tr>)}
-            {!list.length && busy && Array.from({ length: 5 }, (_, row) => <tr className="skeleton-row" key={`loading-${row}`}>{columns[resource].map(([key]) => <td key={key}><span className="skeleton-cell" /></td>)}{writable && <td><span className="skeleton-cell" /></td>}</tr>)}
-            {!list.length && !busy && <tr><td className="table-empty" colSpan={columns[resource].length + (writable ? 1 : 0)}>{query ? "Không tìm thấy kết quả phù hợp." : "Chưa có dữ liệu. Hãy tạo mục đầu tiên."}</td></tr>}
+            {!list.length && (busy || pageLoading) && Array.from({ length: 5 }, (_, row) => <tr className="skeleton-row" key={`loading-${row}`}>{columns[resource].map(([key]) => <td key={key}><span className="skeleton-cell" /></td>)}{writable && <td><span className="skeleton-cell" /></td>}</tr>)}
+            {!list.length && !busy && !pageLoading && <tr><td className="table-empty" colSpan={columns[resource].length + (writable ? 1 : 0)}>{query ? "Không tìm thấy kết quả phù hợp." : "Chưa có dữ liệu. Hãy tạo mục đầu tiên."}</td></tr>}
           </tbody>
         </table></div>
-        <div className="table-footer"><span>Hiển thị <strong>{list.length}</strong> trên {rows.length} mục</span><span>{resource === "departures" && <><CalendarDays size={14} /> Số chỗ được cập nhật theo đơn đang hoạt động</>}</span></div>
+        <div className="table-footer"><span>Hiển thị <strong>{list.length}</strong> trên {totalRows} mục</span><span className="table-footer-controls">{resource === "departures" && <><CalendarDays size={14} /> Số chỗ được cập nhật theo đơn đang hoạt động</>}{serverPaginated && <><button aria-label="Trang trước" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft size={15} /></button><span>Trang {page} / {pageCount}</span><button aria-label="Trang sau" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}><ChevronRight size={15} /></button></>}</span></div>
       </section>
       {modal && <ModalForm title={`${editing ? "Chỉnh sửa" : "Thêm"} ${resourceTitles[resource].toLocaleLowerCase("vi")}`} fields={fields} initial={editing} onClose={() => { setModal(false); setEditing(undefined); }} onSubmit={save} />}
       {confirmation && <ConfirmDialog

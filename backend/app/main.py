@@ -1,13 +1,15 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+import json
 from threading import Lock
 from typing import Any, AsyncIterator
 import secrets
 
 import bcrypt
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
@@ -16,8 +18,11 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import Base, SessionLocal, engine, ensure_account_session_version, get_db
+from .exports import (
+    booking_confirmation_pdf, bookings_workbook, revenue_pdf, revenue_workbook, tours_pdf, tours_workbook,
+)
 from .models import Account, Assignment, Booking, Customer, Departure, Destination, Feedback, Guide, Itinerary, Payment, Tour
-from .schemas import AccountCreate, AccountUpdate, BookingCreate, LoginRequest, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
+from .schemas import AIChatRequest, AccountCreate, AccountUpdate, BookingCreate, LoginRequest, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
 
 ALGORITHM = "HS256"
 ROLE_LABELS = {"admin": "Quản trị viên", "consultant": "Tư vấn viên", "accountant": "Kế toán"}
@@ -440,27 +445,133 @@ def dashboard(db: Session = Depends(get_db), user: dict[str, str] = Depends(curr
     }
 
 
+@app.get("/api/export/tours")
+def export_tours(db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    require_read("tours", user)
+    content = tours_workbook(db)
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="viettour-tours.xlsx"'})
+
+
+@app.get("/api/export/tours/pdf")
+def export_tours_pdf(db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    require_read("tours", user)
+    return Response(tours_pdf(db), media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="viettour-tours.pdf"'})
+
+
+@app.get("/api/export/bookings")
+def export_bookings(db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    require_read("bookings", user)
+    content = bookings_workbook(db)
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="viettour-bookings.xlsx"'})
+
+
+@app.get("/api/export/revenue")
+def export_revenue(db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    require_read("payments", user)
+    content = revenue_workbook(db)
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="viettour-revenue.xlsx"'})
+
+
+@app.get("/api/export/revenue/pdf")
+def export_revenue_pdf(db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    require_read("payments", user)
+    return Response(revenue_pdf(db), media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="viettour-revenue.pdf"'})
+
+
+@app.get("/api/export/bookings/{booking_id}/pdf")
+def export_booking_pdf(booking_id: int, db: Session = Depends(get_db),
+                       user: dict[str, str] = Depends(current_user)):
+    require_read("bookings", user)
+    try:
+        content = booking_confirmation_pdf(db, booking_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(content, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="booking-{booking_id}.pdf"'})
+
+
 @app.get("/api/{resource}")
-def list_resources(resource: str, db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+def list_resources(
+    resource: str,
+    page: int | None = Query(default=None, ge=1),
+    limit: int | None = Query(default=None, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=100),
+    departure_date: date | None = None,
+    status: str | None = Query(default=None, max_length=30),
+    payment_status: str | None = Query(default=None, pattern="^(Chưa thanh toán|Thanh toán một phần|Đã thanh toán)$"),
+    db: Session = Depends(get_db),
+    user: dict[str, str] = Depends(current_user),
+):
     if resource not in WRITE_ROLES:
         raise HTTPException(status_code=404, detail="Danh mục không tồn tại")
     require_read(resource, user)
+    paginated = any(value is not None for value in (page, limit, search, departure_date, status, payment_status))
+    page_number = page or 1
+    page_size = limit or 20
     if resource == "bookings":
-        rows = db.scalars(select(Booking).order_by(Booking.id.desc())).all()
+        query = select(Booking)
+        count_query = select(func.count(Booking.id))
+        if search:
+            term = f"%{search.strip()}%"
+            query = query.join(Customer, Booking.customer_id == Customer.id).where(
+                Booking.booking_code.ilike(term) | Customer.name.ilike(term)
+            )
+            count_query = count_query.join(Customer, Booking.customer_id == Customer.id).where(
+                Booking.booking_code.ilike(term) | Customer.name.ilike(term)
+            )
+        if departure_date:
+            query = query.join(Departure, Booking.departure_id == Departure.id).where(
+                Departure.departure_date == departure_date.isoformat()
+            )
+            count_query = count_query.join(Departure, Booking.departure_id == Departure.id).where(
+                Departure.departure_date == departure_date.isoformat()
+            )
+        if status:
+            query = query.where(Booking.status == status)
+            count_query = count_query.where(Booking.status == status)
+        if payment_status == "Chưa thanh toán":
+            query = query.where(Booking.paid_amount == 0)
+            count_query = count_query.where(Booking.paid_amount == 0)
+        elif payment_status == "Thanh toán một phần":
+            query = query.where(Booking.paid_amount > 0, Booking.paid_amount < Booking.total_amount)
+            count_query = count_query.where(Booking.paid_amount > 0, Booking.paid_amount < Booking.total_amount)
+        elif payment_status == "Đã thanh toán":
+            query = query.where(Booking.paid_amount >= Booking.total_amount)
+            count_query = count_query.where(Booking.paid_amount >= Booking.total_amount)
+        total = db.scalar(count_query) or 0
+        query = query.order_by(Booking.id.desc())
+        if paginated:
+            query = query.offset((page_number - 1) * page_size).limit(page_size)
+        rows = db.scalars(query).all()
         result = []
         for row in rows:
             departure = db.get(Departure, row.departure_id)
             result.append({**serialize(row), "customer_name": db.get(Customer, row.customer_id).name,
                            "tour_name": db.get(Tour, departure.tour_id).name, "departure_date": departure.departure_date,
                            "amount_due": row.total_amount - row.paid_amount})
-        return result
+        return {"items": result, "total": total, "page": page_number, "limit": page_size} if paginated else result
     if resource == "payments":
         rows = db.scalars(select(Payment).order_by(Payment.id.desc())).all()
         return [{**serialize(row), "booking_code": db.get(Booking, row.booking_id).booking_code} for row in rows]
     model = RESOURCE_MODELS.get(resource)
     if model is None:
         raise HTTPException(status_code=404, detail="Danh mục không tồn tại")
-    rows = db.scalars(select(model).order_by(model.id.desc())).all()
+    query = select(model)
+    count_query = select(func.count(model.id))
+    if resource == "customers" and search:
+        term = f"%{search.strip()}%"
+        query = query.where(Customer.name.ilike(term) | Customer.phone.ilike(term) | Customer.email.ilike(term))
+        count_query = count_query.where(Customer.name.ilike(term) | Customer.phone.ilike(term) | Customer.email.ilike(term))
+    total = db.scalar(count_query) or 0
+    query = query.order_by(model.id.desc())
+    if paginated:
+        query = query.offset((page_number - 1) * page_size).limit(page_size)
+    rows = db.scalars(query).all()
     if resource == "departures":
         return [{**serialize(row), "tour_name": db.get(Tour, row.tour_id).name, "remaining_seats": remaining_seats(db, row)} for row in rows]
     if resource == "tours":
@@ -472,7 +583,8 @@ def list_resources(resource: str, db: Session = Depends(get_db), user: dict[str,
                  "departure_date": db.get(Departure, row.departure_id).departure_date} for row in rows]
     if resource == "feedback":
         return [{**serialize(row), "tour_name": db.get(Tour, row.tour_id).name} for row in rows]
-    return [serialize(row) for row in rows]
+    result = [serialize(row) for row in rows]
+    return {"items": result, "total": total, "page": page_number, "limit": page_size} if paginated else result
 
 
 @app.post("/api/{resource}", status_code=201)
@@ -679,6 +791,230 @@ async def optional_ai(system_prompt: str, user_prompt: str, max_tokens: int = 70
         return response.json()["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError):
         raise HTTPException(status_code=502, detail="Dịch vụ AI trả về dữ liệu không hợp lệ") from None
+
+
+AI_CHAT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_available_tours",
+            "description": "Tìm tour đang mở có lịch khởi hành trong tương lai và còn chỗ thực tế.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "destination": {"type": "string", "description": "Tên hoặc một phần tên điểm đến"},
+                    "start_date": {"type": "string", "description": "Ngày khởi hành sớm nhất, YYYY-MM-DD"},
+                    "end_date": {"type": "string", "description": "Ngày khởi hành muộn nhất, YYYY-MM-DD"},
+                    "max_price": {"type": "integer", "description": "Giá tối đa cho mỗi khách"},
+                    "duration_days": {"type": "integer", "description": "Số ngày của tour"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_tour_seats",
+            "description": "Kiểm tra sức chứa và số chỗ còn lại của lịch khởi hành cụ thể.",
+            "parameters": {
+                "type": "object",
+                "properties": {"departure_id": {"type": "integer"}},
+                "required": ["departure_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_destinations",
+            "description": "Tìm các điểm đến theo tên, vùng hoặc mô tả.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+def run_ai_tool(
+    db: Session, name: str, arguments: dict[str, Any], user: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    if name == "get_available_tours":
+        today = date.today().isoformat()
+        start_date = arguments.get("start_date", today)
+        try:
+            start_date = max(today, date.fromisoformat(start_date).isoformat())
+            end_date = date.fromisoformat(arguments["end_date"]).isoformat() if arguments.get("end_date") else None
+        except (TypeError, ValueError):
+            return {"error": "Ngày phải có định dạng YYYY-MM-DD"}
+        if end_date and end_date < start_date:
+            return {"error": "Khoảng ngày không hợp lệ"}
+        statement = (
+            select(Tour, Destination, Departure)
+            .join(Destination, Tour.destination_id == Destination.id)
+            .join(Departure, Departure.tour_id == Tour.id)
+            .where(Tour.status == "Đang mở", Departure.status == "Đang mở",
+                   Departure.departure_date >= start_date,
+                   Departure.departure_date >= today,
+                   Departure.reserved_seats < Departure.capacity)
+        )
+        destination = arguments.get("destination")
+        if destination:
+            statement = statement.where(Destination.name.ilike(f"%{destination[:80]}%"))
+        if end_date:
+            statement = statement.where(Departure.departure_date <= end_date)
+        if arguments.get("max_price") is not None:
+            statement = statement.where(Tour.price <= max(0, int(arguments["max_price"])))
+        if arguments.get("duration_days") is not None:
+            statement = statement.where(Tour.duration_days == max(1, int(arguments["duration_days"])))
+        results = []
+        for tour, destination_row, departure in db.execute(statement.order_by(Departure.departure_date).limit(50)):
+            seats = remaining_seats(db, departure)
+            if seats:
+                results.append({
+                    "tour_id": tour.id, "name": tour.name, "destination": destination_row.name,
+                    "price": tour.price, "duration_days": tour.duration_days,
+                    "departure_id": departure.id, "departure_date": departure.departure_date,
+                    "remaining_seats": seats,
+                })
+        return {"tours": results[:20]}
+    if name == "check_tour_seats":
+        try:
+            departure_id = int(arguments["departure_id"])
+        except (KeyError, TypeError, ValueError):
+            return {"error": "departure_id không hợp lệ"}
+        departure = db.get(Departure, departure_id)
+        if departure is None:
+            return {"error": "Không tìm thấy lịch khởi hành"}
+        tour = db.get(Tour, departure.tour_id)
+        return {
+            "departure_id": departure.id, "tour": tour.name,
+            "departure_date": departure.departure_date, "capacity": departure.capacity,
+            "reserved_seats": departure.reserved_seats,
+            "remaining_seats": remaining_seats(db, departure), "status": departure.status,
+        }
+    if name == "search_destinations":
+        if user and user["role"] not in READ_ROLES["destinations"]:
+            return {"error": "Tài khoản không có quyền tra cứu điểm đến"}
+        query = str(arguments.get("query", "")).strip()[:80]
+        if not query:
+            return {"destinations": []}
+        results = db.scalars(
+            select(Destination).where(
+                Destination.name.ilike(f"%{query}%") | Destination.region.ilike(f"%{query}%")
+                | Destination.description.ilike(f"%{query}%")
+            ).order_by(Destination.name).limit(10)
+        ).all()
+        return {"destinations": [{"name": row.name, "region": row.region, "description": row.description} for row in results]}
+    return {"error": "Công cụ không được hỗ trợ"}
+
+
+def _sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/ai/chat", dependencies=[Depends(limit_ai_requests)])
+async def ai_chat(payload: AIChatRequest, db: Session = Depends(get_db),
+                  _user: dict[str, str] = Depends(current_user)):
+    if not settings.ai_api_key.strip():
+        raise HTTPException(status_code=503, detail="Cần cấu hình AI_API_KEY để sử dụng trò chuyện trực tuyến")
+
+    async def stream() -> AsyncIterator[str]:
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": (
+                "Bạn là trợ lý VietTour. Trả lời tiếng Việt ngắn gọn. Khi hỏi dữ liệu tour, điểm đến, ngày khởi hành "
+                "hoặc số chỗ, hãy gọi công cụ dữ liệu phù hợp. Không đoán số chỗ hay thông tin chưa được công cụ xác nhận."
+            )}
+        ]
+        messages.extend({"role": message.role, "content": message.content} for message in payload.history)
+        messages.append({"role": "user", "content": payload.prompt})
+        url = f"{settings.ai_base_url.rstrip('/')}/chat/completions"
+        headers = {"Authorization": f"Bearer {settings.ai_api_key}", "Content-Type": "application/json"}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                tool_calls: dict[int, dict[str, Any]] = {}
+                initial_request = {
+                    "model": settings.ai_model, "temperature": 0.2, "stream": True,
+                    "messages": messages, "tools": AI_CHAT_TOOLS, "tool_choice": "auto",
+                }
+                async with client.stream("POST", url, headers=headers, json=initial_request) as response:
+                    if response.is_error:
+                        yield _sse("error", {"message": "Dịch vụ AI hiện không khả dụng; vui lòng thử lại sau"})
+                        return
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0].get("delta", {})
+                        except (ValueError, KeyError, IndexError, TypeError):
+                            continue
+                        content = delta.get("content")
+                        if isinstance(content, str) and content:
+                            yield _sse("token", {"text": content})
+                        for call in delta.get("tool_calls", []):
+                            index = call.get("index", 0)
+                            current = tool_calls.setdefault(index, {
+                                "id": "", "type": "function", "function": {"name": "", "arguments": ""}
+                            })
+                            if call.get("id"):
+                                current["id"] += call["id"]
+                            function = call.get("function", {})
+                            current["function"]["name"] += function.get("name", "")
+                            current["function"]["arguments"] += function.get("arguments", "")
+
+                if tool_calls:
+                    calls = [tool_calls[index] for index in sorted(tool_calls)]
+                    tool_messages = []
+                    for call in calls:
+                        try:
+                            arguments = json.loads(call["function"]["arguments"] or "{}")
+                            if not isinstance(arguments, dict):
+                                raise ValueError
+                            result = run_ai_tool(db, call["function"]["name"], arguments, _user)
+                        except (ValueError, TypeError, KeyError, OverflowError):
+                            result = {"error": "Tham số công cụ không hợp lệ"}
+                        tool_messages.append({
+                            "role": "tool", "tool_call_id": call["id"],
+                            "content": json.dumps(result, ensure_ascii=False),
+                        })
+                    messages.append({"role": "assistant", "tool_calls": calls})
+                    messages.extend(tool_messages)
+                    final_request = {
+                        "model": settings.ai_model, "temperature": 0.2, "stream": True,
+                        "messages": messages,
+                    }
+                    async with client.stream("POST", url, headers=headers, json=final_request) as response:
+                        if response.is_error:
+                            yield _sse("error", {"message": "Dịch vụ AI hiện không khả dụng; vui lòng thử lại sau"})
+                            return
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                content = chunk["choices"][0].get("delta", {}).get("content")
+                            except (ValueError, KeyError, IndexError, TypeError):
+                                continue
+                            if isinstance(content, str) and content:
+                                yield _sse("token", {"text": content})
+                yield _sse("done", {})
+        except (httpx.TimeoutException, httpx.RequestError):
+            yield _sse("error", {"message": "Không thể kết nối dịch vụ AI; vui lòng thử lại sau"})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/ai/tour-content", dependencies=[Depends(limit_ai_requests)])

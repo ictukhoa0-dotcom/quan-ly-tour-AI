@@ -75,3 +75,13 @@ class TourGenerationRequest(InputModel):
 class SummaryRequest(InputModel):
     tour_id: int | None = None
     max_feedback: int = Field(default=50, ge=1, le=100)
+
+
+class AIChatMessage(InputModel):
+    role: str = Field(pattern=r"^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class AIChatRequest(InputModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    history: list[AIChatMessage] = Field(default_factory=list, max_length=10)

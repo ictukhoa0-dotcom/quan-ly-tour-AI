@@ -86,6 +86,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .app-footer { display: flex; justify-content: space-between; gap: 15px; padding: 0 37px 20px; color: #9ca69f; font-size: 9px; }
 .app-footer > span:last-child { display: flex; align-items: center; gap: 7px; color: #78917e; }
 .app-footer .status-dot { width: 6px; height: 6px; box-shadow: none; }
+.theme-toggle { display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--line); border-radius: 8px; color: #78847d; background: transparent; }
+.theme-toggle:hover { color: var(--green); background: #f3f6f2; }
 
 .welcome-card { position: relative; display: flex; min-height: 221px; overflow: hidden; border-radius: 14px; color: #fff; background: #315d48; }
 .welcome-copy { z-index: 1; width: 60%; padding: 25px 31px; }
@@ -154,6 +156,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .footnote-right { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: #648c68; }
 
 .entity-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 1px 0 21px; }
+.entity-heading-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 9px; }
 .entity-heading h2 { margin-top: 6px; font-size: 22px; }
 .entity-heading p { margin: 6px 0 0; color: #8b9790; font-size: 11px; }
 .button { @apply inline-flex items-center justify-center gap-2 rounded-lg transition-all; min-height: 37px; padding: 0 14px; border: 1px solid transparent; font-size: 10px; font-weight: 700; transition: .15s; }
@@ -163,6 +166,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .button-secondary { color: #65736a; border-color: #e4e9e3; background: white; }
 .entity-panel { overflow: hidden; }
 .table-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 17px; border-bottom: 1px solid #edf0eb; color: #939e97; font-size: 10px; }
+.table-filters { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+.filter-field { display: flex; align-items: center; gap: 7px; color: #829087; font-size: 9px; }
+.filter-field input, .filter-field select { height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; color: #59685e; background: #fff; font-size: 10px; }
 .table-toolbar strong { color: #435249; font-size: 12px; }
 .search-box { display: flex; align-items: center; gap: 7px; width: min(245px, 48%); height: 32px; padding: 0 9px; border: 1px solid #e9ede8; border-radius: 6px; color: #a0aaa3; }
 .search-box input { width: 100%; border: 0; outline: 0; color: #445248; background: transparent; font-size: 10px; }
@@ -188,6 +194,9 @@ tr:hover td { background: #fcfdfa; }
 .table-footer { display: flex; justify-content: space-between; align-items: center; min-height: 39px; padding: 0 16px; border-top: 1px solid #edf0eb; color: #98a29b; font-size: 9px; }
 .table-footer strong { color: #59675e; }
 .table-footer > span:last-child { display: flex; align-items: center; gap: 5px; }
+.table-footer-controls { display: flex; align-items: center; gap: 8px; }
+.table-footer-controls button { display: grid; width: 27px; height: 27px; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: #627268; background: white; }
+.table-footer-controls button:disabled { opacity: .45; cursor: not-allowed; }
 
 .modal-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; overflow-y: auto; place-items: center; padding: 20px; background: #20352b80; backdrop-filter: blur(3px); }
 .modal-card { width: min(540px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; border-radius: 14px; background: #fff; box-shadow: 0 22px 80px #1e302946; }
@@ -457,11 +466,15 @@ tr:hover td { background: #fcfdfa; }
   .dashboard-footnote { align-items: flex-start; line-height: 1.5; font-size: 8px; }
   .footnote-right { white-space: nowrap; }
   .entity-heading { align-items: flex-start; flex-direction: column; gap: 12px; margin-bottom: 15px; }
+  .entity-heading-actions { justify-content: flex-start; }
   .entity-heading h2 { font-size: 19px; }
   .entity-heading .button { min-height: 34px; }
   .table-toolbar { padding: 11px; }
+  .table-toolbar { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .table-filters { flex-wrap: wrap; justify-content: flex-start; }
   .table-footer { padding: 0 10px; font-size: 8px; }
   .table-footer > span:last-child { display: none; }
+  .table-footer > .table-footer-controls { display: flex; }
   th, td { padding: 10px 9px; }
   .ai-hero { align-items: flex-start; min-height: 130px; padding: 19px 14px; }
   .ai-orb { width: 38px; height: 38px; }
@@ -497,3 +510,49 @@ tr:hover td { background: #fcfdfa; }
 @media (prefers-reduced-motion: reduce) {
   *, *:before, *:after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+:root.dark {
+  color-scheme: dark;
+  --ink: #e4ece6;
+  --muted: #9baaa0;
+  --line: #29372f;
+  --canvas: #111a15;
+  --white: #19251e;
+}
+html.dark body { color: var(--ink); background: var(--canvas); }
+html.dark .sidebar, html.dark .topbar, html.dark .panel, html.dark .modal-card,
+html.dark .profile-menu, html.dark .ai-context-card, html.dark .ai-configuration,
+html.dark .metric-card, html.dark .confirm-card,
+html.dark .table-footer-controls button { color: var(--ink); border-color: var(--line); background: #19251e; }
+html.dark .topbar { background: rgba(25, 37, 30, .94); }
+html.dark .workspace-switch, html.dark .help-card, html.dark .nav-active,
+html.dark .ai-chat-modes, html.dark .ai-prompt-suggestions { border-color: var(--line); background: #202e26; }
+html.dark .main-shell, html.dark .page-content, html.dark .table-wrap { background: var(--canvas); }
+html.dark .breadcrumb strong, html.dark .profile-details strong, html.dark .profile-menu > div,
+html.dark .entity-heading h2, html.dark .panel-heading h3, html.dark .form-field > span,
+html.dark .chat-sender, html.dark .ai-assistant-identity strong, html.dark .metric-value,
+html.dark .confirm-card h2, html.dark .metric-title { color: #e4ece6; }
+html.dark .breadcrumb, html.dark .profile-details small, html.dark .entity-heading p,
+html.dark .table-toolbar, html.dark .table-footer, html.dark .metric-meta,
+html.dark .ai-capability p, html.dark .workspace-switch small { color: #9baaa0; }
+html.dark .nav-item, html.dark .help-card p, html.dark .sidebar-foot { color: #a5b3aa; }
+html.dark .departure-row, html.dark .activity-row { border-color: var(--line); }
+html.dark .confirm-card > p { color: #a5b3aa; }
+html.dark .nav-item:hover, html.dark .theme-toggle:hover { color: #b6d4bc; background: #26382d; }
+html.dark .nav-active { color: #b6d4bc; }
+html.dark th { color: #a5b3aa; background: #202e26; }
+html.dark td, html.dark .table-footer, html.dark .table-toolbar { border-color: var(--line); }
+html.dark tr:hover td { background: #1e2b23; }
+html.dark .form-field input, html.dark .form-field select, html.dark .form-field textarea,
+html.dark .filter-field input, html.dark .filter-field select, html.dark .search-box,
+html.dark .ai-budget-setting, html.dark .ai-tour-select, html.dark .ai-chat-composer,
+html.dark .global-search { color: var(--ink); border-color: var(--line); background: #111a15; }
+html.dark .form-field input::placeholder, html.dark .global-search input { color: #9baaa0; }
+html.dark .table-footer-controls button, html.dark .theme-toggle { color: #c4d1c8; }
+html.dark .button-secondary { color: #cbd9cf; border-color: #405348; background: #23332a; }
+html.dark .chat-message-assistant .chat-message-body, html.dark .ai-context-card { color: var(--ink); background: #202e26; }
+html.dark .chat-message-user .chat-message-body { background: #254d39; }
+html.dark .ai-mode-chip { color: #becbc1; border-color: var(--line); background: #19251e; }
+html.dark .ai-mode-chip.selected { color: #d6e8d9; border-color: #52785a; background: #294433; }
+html.dark .toast { color: #e4ece6; border-color: var(--line); background: #19251e; }
+html.dark .empty-inline, html.dark .table-empty { color: #9baaa0; }
