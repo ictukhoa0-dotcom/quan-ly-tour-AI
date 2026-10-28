@@ -1,6 +1,6 @@
 import { ArrowDownRight, ArrowUpRight, CalendarDays, ChevronRight, CircleDollarSign, Compass, Plus, Users } from "lucide-react";
 import type { ReactNode } from "react";
-import type { DashboardData, Row } from "../types";
+import type { DashboardData, Row, User } from "../types";
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value) + " ₫";
 const displayDate = (value: string | number | null) => {
@@ -8,9 +8,10 @@ const displayDate = (value: string | number | null) => {
   return new Date(`${value}T00:00:00`).toLocaleDateString("vi-VN", { day: "2-digit", month: "short" });
 };
 
-type Props = { data: DashboardData | null; loading: boolean; onNavigate: (key: string) => void; onNewBooking: () => void };
+type Props = { data: DashboardData | null; loading: boolean; role: User["role"]; onNavigate: (key: string) => void; onNewBooking: () => void };
 
-export default function Dashboard({ data, loading, onNavigate, onNewBooking }: Props) {
+export default function Dashboard({ data, loading, role, onNavigate, onNewBooking }: Props) {
+  const isAdmin = role === "admin";
   const metrics = data?.metrics;
   return (
     <div className="page-content">
@@ -20,10 +21,10 @@ export default function Dashboard({ data, loading, onNavigate, onNewBooking }: P
       </section>
       <div className="section-heading"><div><span className="eyebrow">TỔNG QUAN KINH DOANH</span><h2>Tình hình vận hành</h2></div><button className="date-chip"><CalendarDays size={15} /> Dữ liệu trực tiếp</button></div>
       <section className="metric-grid" aria-label="Chỉ số hoạt động">
-        <Metric title="Đơn đang hoạt động" value={metrics?.active_bookings ?? 0} icon={<CalendarDays />} tone="mint" change="Đã xác nhận và chờ" trend="neutral" loading={loading} />
-        <Metric title="Tổng tiền đã thu" value={money(metrics?.revenue ?? 0)} icon={<CircleDollarSign />} tone="peach" change="Theo các khoản thanh toán" trend="neutral" loading={loading} />
+        {isAdmin && <Metric title="Đơn đang hoạt động" value={metrics?.active_bookings ?? 0} icon={<CalendarDays />} tone="mint" change="Đã xác nhận và chờ" trend="neutral" loading={loading} />}
+        {isAdmin && <Metric title="Tổng tiền đã thu" value={money(metrics?.revenue ?? 0)} icon={<CircleDollarSign />} tone="peach" change="Theo các khoản thanh toán" trend="neutral" loading={loading} />}
         <Metric title="Tổng số tour" value={metrics?.tour_count ?? 0} icon={<Compass />} tone="lavender" change="Trong danh mục" trend="neutral" loading={loading} />
-        <Metric title="Khách hàng" value={metrics?.customer_count ?? 0} icon={<Users />} tone="blue" change="Hồ sơ hiện có" trend="neutral" loading={loading} />
+        {isAdmin && <Metric title="Khách hàng" value={metrics?.customer_count ?? 0} icon={<Users />} tone="blue" change="Hồ sơ hiện có" trend="neutral" loading={loading} />}
       </section>
       <section className="dashboard-lower">
         <div className="panel departures-panel">
@@ -37,14 +38,14 @@ export default function Dashboard({ data, loading, onNavigate, onNewBooking }: P
             {loading && <div className="skeleton-list"><i /><i /><i /></div>}
           </div>
         </div>
-        <div className="panel activity-panel">
+        {isAdmin && <div className="panel activity-panel">
           <div className="panel-heading"><div><span className="eyebrow">VỪA CẬP NHẬT</span><h3>Đơn đặt tour mới</h3></div><button className="link-button" onClick={() => onNavigate("bookings")}>Tất cả <ChevronRight size={16} /></button></div>
           <div className="activity-list">{(data?.recent_bookings ?? []).slice(0, 4).map((row: Row, index) => <div className="activity-row" key={row.id}><span className={`avatar avatar-${index % 4}`}>{String(row.customer_name ?? "K").charAt(0)}</span><div className="activity-info"><strong>{row.customer_name}</strong><small>{row.tour_name}</small></div><span className={`status-pill ${row.status === "Đã hủy" ? "status-red" : row.status === "Chờ xác nhận" ? "status-amber" : "status-green"}`}>{row.status}</span></div>)}
             {!loading && !data?.recent_bookings.length && <div className="empty-inline">Chưa có đơn đặt tour.</div>}
             {loading && <div className="skeleton-list"><i /><i /><i /></div>}
           </div>
           <button className="view-reports" onClick={() => onNavigate("payments")}>Xem báo cáo doanh thu <ArrowUpRight size={15} /></button>
-        </div>
+        </div>}
       </section>
       <div className="dashboard-footnote"><span>✦</span> Dữ liệu được cập nhật trực tiếp từ hoạt động vận hành của bạn <span className="footnote-right"><ArrowDownRight size={15} /> Tăng trưởng ổn định</span></div>
     </div>

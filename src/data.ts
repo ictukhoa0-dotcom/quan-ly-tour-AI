@@ -6,14 +6,14 @@ export const navItems: { key: string; label: string; icon: string; roles?: User[
   { key: "departures", label: "Lịch khởi hành", icon: "calendar" },
   { key: "bookings", label: "Đặt tour", icon: "ticket" },
   { key: "customers", label: "Khách hàng", icon: "users" },
-  { key: "payments", label: "Thanh toán", icon: "wallet", roles: ["admin", "accountant"] },
-  { key: "guides", label: "Hướng dẫn viên", icon: "compass", roles: ["admin", "consultant"] },
-  { key: "destinations", label: "Điểm đến", icon: "globe", roles: ["admin", "consultant"] },
-  { key: "itineraries", label: "Lịch trình", icon: "route", roles: ["admin", "consultant"] },
-  { key: "assignments", label: "Phân công", icon: "clipboard", roles: ["admin", "consultant"] },
-  { key: "feedback", label: "Phản hồi", icon: "message", roles: ["admin", "consultant"] },
+  { key: "payments", label: "Thanh toán", icon: "wallet", roles: ["admin"] },
+  { key: "guides", label: "Hướng dẫn viên", icon: "compass", roles: ["admin"] },
+  { key: "destinations", label: "Điểm đến", icon: "globe", roles: ["admin"] },
+  { key: "itineraries", label: "Lịch trình", icon: "route", roles: ["admin"] },
+  { key: "assignments", label: "Phân công", icon: "clipboard", roles: ["admin"] },
+  { key: "feedback", label: "Phản hồi", icon: "message", roles: ["admin"] },
   { key: "users", label: "Tài khoản", icon: "shield", roles: ["admin"] },
-  { key: "ai", label: "Trợ lý AI", icon: "sparkles" },
+  { key: "ai", label: "Trợ lý AI", icon: "sparkles", roles: ["admin"] },
 ];
 
 const select = (values: [string | number, string][]) => values.map(([value, label]) => ({ value, label }));
@@ -91,6 +91,7 @@ export const resourceTitles: Record<ResourceName, string> = {
 
 export const canWrite = (resource: ResourceName, role: User["role"]) => {
   if (role === "admin") return true;
-  if (role === "consultant") return resource !== "payments";
-  return ["bookings", "customers", "payments"].includes(resource);
+  return ["bookings", "customers"].includes(resource);
 };
+
+export const canDelete = (role: User["role"]) => role === "admin";

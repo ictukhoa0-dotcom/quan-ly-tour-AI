@@ -4,7 +4,7 @@ import {
   Pencil, Plus, Printer, Search, Trash2, Users,
 } from "lucide-react";
 import { api, type ListFilters, type PageResult } from "../api";
-import { canWrite, resourceFields, resourceTitles } from "../data";
+import { canDelete, canWrite, resourceFields, resourceTitles } from "../data";
 import type { Field, ResourceName, Row, User } from "../types";
 import ConfirmDialog from "./ConfirmDialog";
 import ModalForm from "./ModalForm";
@@ -68,6 +68,9 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
   const [pending, setPending] = useState(false);
   const [exporting, setExporting] = useState(false);
   const writable = canWrite(resource, role);
+  const deletable = canDelete(role);
+  const canCancel = role === "admin";
+  const hasRowActions = resource !== "payments" && (writable || deletable);
   const serverPaginated = resource === "customers" || resource === "bookings";
   const filteredRows = useMemo(() => rows.filter((row) => Object.values(row).some((value) => String(value ?? "").toLocaleLowerCase("vi").includes(query.toLocaleLowerCase("vi")))), [rows, query]);
   const list = serverPaginated ? serverPage?.items ?? [] : filteredRows;
@@ -109,7 +112,9 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
     const source = sources[field.key];
     if (!source) return field;
     const options = (formDatasets[source.source] ?? []).filter((item) => {
-      if (field.key === "departure_id") return item.status === "Đang mở" && Number(item.remaining_seats) > 0 && String(item.departure_date) >= new Date().toISOString().slice(0, 10);
+      if (field.key === "departure_id") return item.status === "Đang mở"
+        && (Number(item.remaining_seats) > 0 || Number(item.id) === Number(editing?.departure_id))
+        && String(item.departure_date) >= new Date().toISOString().slice(0, 10);
       if (field.key === "booking_id") return item.status !== "Đã hủy" && Number(item.amount_due) > 0;
       return true;
     });
@@ -123,7 +128,7 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
           : field.key === "booking_id" ? ` · còn nợ ${money(Number(item.amount_due))}` : ""),
       })),
     };
-  }), [resource, datasets, relatedRows]);
+  }), [resource, datasets, relatedRows, editing]);
 
   async function save(payload: Record<string, string | number>) {
     try {
@@ -196,7 +201,21 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
     setModal(true);
   }
 
-  const createOnly = resource === "bookings" || resource === "payments";
+  async function openEditForm(row: Row) {
+    setEditing(row);
+    if (resource === "bookings") {
+      try {
+        const customers = await api.list("customers");
+        setRelatedRows((current) => ({ ...current, customers }));
+      } catch (error) {
+        onToast(error instanceof Error ? error.message : "Không thể tải dữ liệu biểu mẫu.", "error");
+        return;
+      }
+    }
+    setModal(true);
+  }
+
+  const createOnly = resource === "payments";
   const showCreate = writable;
   const createLabel = resource === "bookings" ? "Tạo đơn đặt tour" : resource === "payments" ? "Ghi nhận thanh toán" : "Thêm mới";
   const Icon = resource === "customers" ? Users : resource === "payments" ? CircleDollarSign : resource === "bookings" ? ClipboardPlus : Plus;
@@ -214,7 +233,7 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
           {resource === "bookings" && <><label className="filter-field"><span>Khởi hành</span><input aria-label="Lọc theo ngày khởi hành" type="date" value={departureDate} onChange={(event) => { setDepartureDate(event.target.value); setPage(1); }} /></label><label className="filter-field"><span>Trạng thái đơn</span><select aria-label="Lọc theo trạng thái đơn" value={bookingStatus} onChange={(event) => { setBookingStatus(event.target.value); setPage(1); }}><option value="">Tất cả đơn</option><option value="Đã xác nhận">Đã xác nhận</option><option value="Chờ xác nhận">Chờ xác nhận</option><option value="Đã hủy">Đã hủy</option></select></label><label className="filter-field"><span>Thanh toán</span><select aria-label="Lọc theo trạng thái thanh toán" value={paymentStatus} onChange={(event) => { setPaymentStatus(event.target.value); setPage(1); }}><option value="">Tất cả thanh toán</option><option value="Chưa thanh toán">Chưa thanh toán</option><option value="Thanh toán một phần">Thanh toán một phần</option><option value="Đã thanh toán">Đã thanh toán</option></select></label></>}
           <label className="search-box"><Search size={16} /><input aria-label="Tìm kiếm" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Tìm kiếm..." /></label>
         </div></div>
-        <div className="table-wrap"><table><thead><tr>{columns[resource].map(([key, label]) => <th key={key}>{label}</th>)}{writable && <th className="actions-head">Thao tác</th>}</tr></thead>
+        <div className="table-wrap"><table><thead><tr>{columns[resource].map(([key, label]) => <th key={key}>{label}</th>)}{hasRowActions && <th className="actions-head">Thao tác</th>}</tr></thead>
           <tbody>
             {list.map((row) => <tr key={row.id}>
               {columns[resource].map(([key]) => <td key={key}>{key === "price" || key === "amount" || key === "total_amount" || key === "paid_amount" || key === "amount_due" ? money(Number(row[key] ?? 0)) :
@@ -225,14 +244,15 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
                 key === "description" || key === "details" || key === "comment" ? <span className="cell-truncate" title={String(row[key] ?? "")}>{row[key]}</span> :
                 key === "status" ? <span className={`status-pill ${row[key] === "Đã hủy" ? "status-red" : row[key] === "Chờ xác nhận" ? "status-amber" : "status-green"}`}>{row[key]}</span> :
                 row[key] ?? "—"}</td>)}
-              {writable && <td><div className="row-actions">
+              {hasRowActions && <td><div className="row-actions">
                 {resource === "bookings" && <button className="icon-button small-icon" disabled={exporting} aria-label="In phiếu xác nhận PDF" title="In phiếu xác nhận PDF" onClick={() => void downloadFile(`/export/bookings/${row.id}/pdf`, `booking-${row.id}.pdf`, true)}><Printer size={15} /></button>}
-                {resource === "bookings" && row.status !== "Đã hủy" && <button className="text-action action-danger" disabled={pending} onClick={() => setConfirmation({ action: "cancel", row })}>Hủy đơn</button>}
-                {!createOnly && <><button className="icon-button small-icon" disabled={pending} aria-label="Chỉnh sửa" title="Chỉnh sửa" onClick={() => { setEditing(row); setModal(true); }}><Pencil size={15} /></button><button className="icon-button small-icon delete-action" disabled={pending} aria-label="Xóa" title="Xóa" onClick={() => setConfirmation({ action: "delete", row })}><Trash2 size={15} /></button></>}
+                {canCancel && resource === "bookings" && row.status !== "Đã hủy" && <button className="text-action action-danger" disabled={pending} onClick={() => setConfirmation({ action: "cancel", row })}>Hủy đơn</button>}
+                {writable && !createOnly && <button className="icon-button small-icon" disabled={pending} aria-label="Chỉnh sửa" title="Chỉnh sửa" onClick={() => void openEditForm(row)}><Pencil size={15} /></button>}
+                {deletable && !createOnly && <button className="icon-button small-icon delete-action" disabled={pending} aria-label="Xóa" title="Xóa" onClick={() => setConfirmation({ action: "delete", row })}><Trash2 size={15} /></button>}
               </div></td>}
             </tr>)}
-            {!list.length && (busy || pageLoading) && Array.from({ length: 5 }, (_, row) => <tr className="skeleton-row" key={`loading-${row}`}>{columns[resource].map(([key]) => <td key={key}><span className="skeleton-cell" /></td>)}{writable && <td><span className="skeleton-cell" /></td>}</tr>)}
-            {!list.length && !busy && !pageLoading && <tr><td className="table-empty" colSpan={columns[resource].length + (writable ? 1 : 0)}>{query ? "Không tìm thấy kết quả phù hợp." : "Chưa có dữ liệu. Hãy tạo mục đầu tiên."}</td></tr>}
+            {!list.length && (busy || pageLoading) && Array.from({ length: 5 }, (_, row) => <tr className="skeleton-row" key={`loading-${row}`}>{columns[resource].map(([key]) => <td key={key}><span className="skeleton-cell" /></td>)}{hasRowActions && <td><span className="skeleton-cell" /></td>}</tr>)}
+            {!list.length && !busy && !pageLoading && <tr><td className="table-empty" colSpan={columns[resource].length + (hasRowActions ? 1 : 0)}>{query ? "Không tìm thấy kết quả phù hợp." : "Chưa có dữ liệu. Hãy tạo mục đầu tiên."}</td></tr>}
           </tbody>
         </table></div>
         <div className="table-footer"><span>Hiển thị <strong>{list.length}</strong> trên {totalRows} mục</span><span className="table-footer-controls">{resource === "departures" && <><CalendarDays size={14} /> Số chỗ được cập nhật theo đơn đang hoạt động</>}{serverPaginated && <><button aria-label="Trang trước" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft size={15} /></button><span>Trang {page} / {pageCount}</span><button aria-label="Trang sau" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}><ChevronRight size={15} /></button></>}</span></div>

@@ -22,10 +22,10 @@ from .exports import (
     booking_confirmation_pdf, bookings_workbook, revenue_pdf, revenue_workbook, tours_pdf, tours_workbook,
 )
 from .models import Account, Assignment, Booking, Customer, Departure, Destination, Feedback, Guide, Itinerary, Payment, Tour
-from .schemas import AIChatRequest, AccountCreate, AccountUpdate, BookingCreate, LoginRequest, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
+from .schemas import AIChatRequest, AccountCreate, AccountUpdate, BookingCreate, BookingUpdate, LoginRequest, PaymentCreate, RecommendationRequest, SummaryRequest, TourGenerationRequest
 
 ALGORITHM = "HS256"
-ROLE_LABELS = {"admin": "Quản trị viên", "consultant": "Tư vấn viên", "accountant": "Kế toán"}
+ROLE_LABELS = {"admin": "Quản trị viên", "tu_van": "Tư vấn viên"}
 RESOURCE_MODELS = {
     "tours": Tour,
     "destinations": Destination,
@@ -36,25 +36,16 @@ RESOURCE_MODELS = {
     "assignments": Assignment,
     "feedback": Feedback,
 }
-WRITE_ROLES = {
-    "tours": {"admin", "consultant"}, "destinations": {"admin", "consultant"},
-    "itineraries": {"admin", "consultant"}, "departures": {"admin", "consultant"},
-    "customers": {"admin", "consultant", "accountant"}, "bookings": {"admin", "consultant", "accountant"},
-    "payments": {"admin", "accountant"}, "guides": {"admin", "consultant"},
-    "assignments": {"admin", "consultant"}, "feedback": {"admin", "consultant"},
-}
-READ_ROLES = {
-    "tours": {"admin", "consultant", "accountant"},
-    "destinations": {"admin", "consultant"},
-    "itineraries": {"admin", "consultant"},
-    "departures": {"admin", "consultant", "accountant"},
-    "customers": {"admin", "consultant", "accountant"},
-    "bookings": {"admin", "consultant", "accountant"},
-    "payments": {"admin", "accountant"},
-    "guides": {"admin", "consultant"},
-    "assignments": {"admin", "consultant"},
-    "feedback": {"admin", "consultant"},
-}
+ALL_RESOURCES = set(RESOURCE_MODELS) | {"bookings", "payments"}
+WRITE_ROLES = {resource: {"admin"} for resource in ALL_RESOURCES}
+WRITE_ROLES.update({"customers": {"admin", "tu_van"}, "bookings": {"admin", "tu_van"}})
+READ_ROLES = {resource: {"admin"} for resource in ALL_RESOURCES}
+READ_ROLES.update({
+    "tours": {"admin", "tu_van"},
+    "departures": {"admin", "tu_van"},
+    "customers": {"admin", "tu_van"},
+    "bookings": {"admin", "tu_van"},
+})
 Base.metadata.create_all(bind=engine)
 ensure_account_session_version(engine)
 DUMMY_PASSWORD_HASH = bcrypt.hashpw(secrets.token_bytes(32), bcrypt.gensalt()).decode("ascii")
@@ -151,6 +142,11 @@ def require_admin(user: dict[str, str]) -> None:
 def require_write(resource: str, user: dict[str, str]) -> None:
     if user["role"] not in WRITE_ROLES[resource]:
         raise HTTPException(status_code=403, detail="Bạn không có quyền thực hiện thao tác này")
+
+
+def require_delete(user: dict[str, str]) -> None:
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới được xóa dữ liệu")
 
 
 def require_read(resource: str, user: dict[str, str]) -> None:
@@ -431,18 +427,29 @@ def update_account(account_id: int, payload: AccountUpdate, db: Session = Depend
 
 @app.get("/api/dashboard")
 def dashboard(db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
-    active_bookings = db.scalar(select(func.count(Booking.id)).where(Booking.status != "Đã hủy")) or 0
-    revenue = db.scalar(select(func.coalesce(func.sum(Payment.amount), 0))) or 0
     tour_count = db.scalar(select(func.count(Tour.id))) or 0
-    customer_count = db.scalar(select(func.count(Customer.id))) or 0
     upcoming = db.scalars(select(Departure).where(Departure.departure_date >= date.today().isoformat()).order_by(Departure.departure_date).limit(5)).all()
-    recent = db.scalars(select(Booking).order_by(Booking.id.desc()).limit(5)).all()
-    return {
-        "metrics": {"active_bookings": active_bookings, "revenue": revenue, "tour_count": tour_count, "customer_count": customer_count},
+    response = {
+        "metrics": {"tour_count": tour_count},
         "upcoming_departures": [{**serialize(item), "remaining_seats": remaining_seats(db, item), "tour_name": db.get(Tour, item.tour_id).name} for item in upcoming],
-        "recent_bookings": [{**serialize(item), "customer_name": db.get(Customer, item.customer_id).name,
-                             "tour_name": db.get(Tour, db.get(Departure, item.departure_id).tour_id).name} for item in recent],
+        "recent_bookings": [],
     }
+    if user["role"] == "admin":
+        active_bookings = db.scalar(select(func.count(Booking.id)).where(Booking.status != "Đã hủy")) or 0
+        revenue = db.scalar(select(func.coalesce(func.sum(Payment.amount), 0))) or 0
+        customer_count = db.scalar(select(func.count(Customer.id))) or 0
+        recent = db.scalars(select(Booking).order_by(Booking.id.desc()).limit(5)).all()
+        response["metrics"].update({
+            "active_bookings": active_bookings,
+            "revenue": revenue,
+            "customer_count": customer_count,
+        })
+        response["recent_bookings"] = [
+            {**serialize(item), "customer_name": db.get(Customer, item.customer_id).name,
+             "tour_name": db.get(Tour, db.get(Departure, item.departure_id).tour_id).name}
+            for item in recent
+        ]
+    return response
 
 
 @app.get("/api/export/tours")
@@ -607,6 +614,8 @@ def create_resource(resource: str, data: dict[str, Any], db: Session = Depends(g
 
 @app.patch("/api/{resource}/{entity_id}")
 def update_resource(resource: str, entity_id: int, data: dict[str, Any], db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    if resource == "bookings":
+        return update_booking(entity_id, validate_input(BookingUpdate, data), db, user)
     model = RESOURCE_MODELS.get(resource)
     if model is None:
         raise HTTPException(status_code=404, detail="Danh mục không hỗ trợ chỉnh sửa")
@@ -626,10 +635,12 @@ def update_resource(resource: str, entity_id: int, data: dict[str, Any], db: Ses
 
 @app.delete("/api/{resource}/{entity_id}")
 def delete_resource(resource: str, entity_id: int, db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    if resource == "bookings":
+        return delete_booking(entity_id, db, user)
     model = RESOURCE_MODELS.get(resource)
     if model is None:
         raise HTTPException(status_code=404, detail="Danh mục không hỗ trợ xóa")
-    require_write(resource, user)
+    require_delete(user)
     item = get_entity(db, model, entity_id, resource)
     db.delete(item)
     try:
@@ -677,6 +688,90 @@ def create_booking(payload: BookingCreate, db: Session, user: dict[str, str]):
     return commit_and_serialize(db, booking)
 
 
+def update_booking(booking_id: int, payload: BookingUpdate, db: Session, user: dict[str, str]):
+    require_write("bookings", user)
+    booking = get_entity(db, Booking, booking_id, "đơn đặt tour")
+    if booking.status == "Đã hủy":
+        raise HTTPException(status_code=409, detail="Không thể chỉnh sửa đơn đã hủy")
+
+    customer_id = payload.customer_id if payload.customer_id is not None else booking.customer_id
+    departure_id = payload.departure_id if payload.departure_id is not None else booking.departure_id
+    seats = payload.seats if payload.seats is not None else booking.seats
+    get_entity(db, Customer, customer_id, "khách hàng")
+    target_departure = get_entity(db, Departure, departure_id, "lịch khởi hành")
+    if target_departure.status != "Đang mở" or target_departure.departure_date < date.today().isoformat():
+        raise HTTPException(status_code=409, detail="Lịch khởi hành đã đóng hoặc đã qua")
+    target_tour = get_entity(db, Tour, target_departure.tour_id, "tour")
+    total_amount = target_tour.price * seats
+    if booking.paid_amount > total_amount:
+        raise HTTPException(status_code=409, detail="Tổng tiền mới không thể thấp hơn số tiền đã thu")
+
+    old_departure_id = booking.departure_id
+    if departure_id == old_departure_id:
+        seat_delta = seats - booking.seats
+        if seat_delta:
+            reservation = db.execute(
+                update(Departure)
+                .where(
+                    Departure.id == departure_id,
+                    Departure.reserved_seats + seat_delta <= Departure.capacity,
+                    Departure.reserved_seats + seat_delta >= 0,
+                )
+                .values(reserved_seats=Departure.reserved_seats + seat_delta)
+            )
+            if reservation.rowcount != 1:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Lịch khởi hành không còn đủ chỗ")
+    else:
+        released = db.execute(
+            update(Departure)
+            .where(Departure.id == old_departure_id, Departure.reserved_seats >= booking.seats)
+            .values(reserved_seats=Departure.reserved_seats - booking.seats)
+        )
+        reserved = db.execute(
+            update(Departure)
+            .where(
+                Departure.id == departure_id,
+                Departure.status == "Đang mở",
+                Departure.departure_date >= date.today().isoformat(),
+                Departure.reserved_seats + seats <= Departure.capacity,
+            )
+            .values(reserved_seats=Departure.reserved_seats + seats)
+        )
+        if released.rowcount != 1 or reserved.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Không thể chuyển đơn do lịch khởi hành không đủ chỗ")
+
+    booking.customer_id = customer_id
+    booking.departure_id = departure_id
+    booking.seats = seats
+    booking.total_amount = total_amount
+    return commit_and_serialize(db, booking)
+
+
+def delete_booking(booking_id: int, db: Session, user: dict[str, str]):
+    require_delete(user)
+    booking = get_entity(db, Booking, booking_id, "đơn đặt tour")
+    if db.scalar(select(func.count(Payment.id)).where(Payment.booking_id == booking.id)):
+        raise HTTPException(status_code=409, detail="Không thể xóa đơn đã có thanh toán")
+    if booking.status != "Đã hủy":
+        released = db.execute(
+            update(Departure)
+            .where(Departure.id == booking.departure_id, Departure.reserved_seats >= booking.seats)
+            .values(reserved_seats=Departure.reserved_seats - booking.seats)
+        )
+        if released.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Không thể hoàn lại số chỗ của đơn")
+    db.delete(booking)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Không thể xóa đơn vì dữ liệu liên quan đang được sử dụng") from None
+    return {"message": "Đã xóa thành công"}
+
+
 def create_payment(payload: PaymentCreate, db: Session, user: dict[str, str]):
     require_write("payments", user)
     booking = get_entity(db, Booking, payload.booking_id, "đơn đặt tour")
@@ -702,7 +797,7 @@ def create_payment(payload: PaymentCreate, db: Session, user: dict[str, str]):
 
 @app.post("/api/bookings/{booking_id}/cancel")
 def cancel_booking(booking_id: int, db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
-    require_write("bookings", user)
+    require_admin(user)
     booking = get_entity(db, Booking, booking_id, "đơn đặt tour")
     result = db.execute(
         update(Booking)
@@ -722,19 +817,22 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db), user: dict[st
 
 
 @app.get("/api/departures/{departure_id}/seats")
-def get_seats(departure_id: int, db: Session = Depends(get_db), _user: dict[str, str] = Depends(current_user)):
+def get_seats(departure_id: int, db: Session = Depends(get_db), user: dict[str, str] = Depends(current_user)):
+    require_read("departures", user)
     departure = get_entity(db, Departure, departure_id, "lịch khởi hành")
     return {"departure_id": departure.id, "capacity": departure.capacity, "remaining_seats": remaining_seats(db, departure)}
 
 
 @app.get("/api/ai/status", dependencies=[Depends(limit_ai_requests)])
 def ai_status(_user: dict[str, str] = Depends(current_user)):
+    require_admin(_user)
     configured = bool(settings.ai_api_key.strip())
     return {"configured": configured, "mode": "provider" if configured else "deterministic"}
 
 
 @app.post("/api/ai/recommendations", dependencies=[Depends(limit_ai_requests)])
 def recommendations(payload: RecommendationRequest, db: Session = Depends(get_db), _user: dict[str, str] = Depends(current_user)):
+    require_admin(_user)
     today = date.today().isoformat()
     earliest = max(today, payload.departure_after.isoformat() if payload.departure_after else today)
     tours = db.scalars(select(Tour).where(Tour.price <= payload.budget, Tour.status == "Đang mở")).all()
@@ -921,6 +1019,7 @@ def _sse(event: str, payload: dict[str, Any]) -> str:
 @app.post("/api/ai/chat", dependencies=[Depends(limit_ai_requests)])
 async def ai_chat(payload: AIChatRequest, db: Session = Depends(get_db),
                   _user: dict[str, str] = Depends(current_user)):
+    require_admin(_user)
     if not settings.ai_api_key.strip():
         raise HTTPException(status_code=503, detail="Cần cấu hình AI_API_KEY để sử dụng trò chuyện trực tuyến")
 
@@ -1019,6 +1118,7 @@ async def ai_chat(payload: AIChatRequest, db: Session = Depends(get_db),
 
 @app.post("/api/ai/tour-content", dependencies=[Depends(limit_ai_requests)])
 async def generate_tour_content(payload: TourGenerationRequest, db: Session = Depends(get_db), _user: dict[str, str] = Depends(current_user)):
+    require_admin(_user)
     existing = []
     destination = payload.destination
     description = ""
@@ -1043,6 +1143,7 @@ async def generate_tour_content(payload: TourGenerationRequest, db: Session = De
 
 @app.post("/api/ai/feedback-summary", dependencies=[Depends(limit_ai_requests)])
 async def feedback_summary(payload: SummaryRequest, db: Session = Depends(get_db), _user: dict[str, str] = Depends(current_user)):
+    require_admin(_user)
     query = select(Feedback).order_by(Feedback.id.desc()).limit(payload.max_feedback)
     if payload.tour_id is not None:
         query = query.where(Feedback.tour_id == payload.tour_id)

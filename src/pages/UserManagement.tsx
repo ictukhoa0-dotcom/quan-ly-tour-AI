@@ -11,11 +11,10 @@ type Props = {
 
 const roleLabels: Record<User["role"], string> = {
   admin: "Quản trị viên",
-  consultant: "Tư vấn viên",
-  accountant: "Kế toán",
+  tu_van: "Tư vấn viên",
 };
 
-const emptyForm = { username: "", name: "", role: "consultant" as User["role"], password: "" };
+const emptyForm = { username: "", name: "", role: "tu_van" as User["role"], password: "" };
 
 export default function UserManagement({ currentUser, onToast, onPasswordChanged }: Props) {
   const [accounts, setAccounts] = useState<Account[]>([]);

@@ -14,13 +14,13 @@ class LoginRequest(InputModel):
 class AccountCreate(InputModel):
     username: str = Field(min_length=3, max_length=40, pattern=r"^[A-Za-z0-9_.-]+$")
     name: str = Field(min_length=1, max_length=120)
-    role: str = Field(pattern=r"^(admin|consultant|accountant)$")
+    role: str = Field(pattern=r"^(admin|tu_van)$")
     password: str = Field(min_length=12, max_length=72)
 
 
 class AccountUpdate(InputModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    role: str | None = Field(default=None, pattern=r"^(admin|consultant|accountant)$")
+    role: str | None = Field(default=None, pattern=r"^(admin|tu_van)$")
     password: str | None = Field(default=None, min_length=12, max_length=72)
     is_active: bool | None = None
 
@@ -42,6 +42,25 @@ class BookingCreate(InputModel):
     customer_id: int
     departure_id: int
     seats: int = Field(gt=0, le=50)
+
+
+class BookingUpdate(InputModel):
+    customer_id: int | None = Field(default=None, gt=0)
+    departure_id: int | None = Field(default=None, gt=0)
+    seats: int | None = Field(default=None, gt=0, le=50)
+
+    @field_validator("customer_id", "departure_id", "seats")
+    @classmethod
+    def reject_null_updates(cls, value):
+        if value is None:
+            raise ValueError("Giá trị cập nhật không được để trống")
+        return value
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not self.model_fields_set:
+            raise ValueError("Chỉ định ít nhất một trường cần cập nhật")
+        return self
 
 
 class PaymentCreate(InputModel):

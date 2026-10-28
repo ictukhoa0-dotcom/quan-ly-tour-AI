@@ -60,7 +60,9 @@ Thay `JWT_SECRET` mặc định bằng giá trị này cho mọi môi trường 
 
 Khi cơ sở dữ liệu chưa có tài khoản, lần khởi động đầu tiên cần `INITIAL_ADMIN_USERNAME` và `INITIAL_ADMIN_PASSWORD` để tạo quản trị viên. Đổi giá trị mẫu trong `backend\.env` trước lần chạy đầu; mật khẩu phải dài ít nhất 12 ký tự và tối đa 72 byte. Sau khi tạo tài khoản, có thể bỏ hai biến khởi tạo khỏi môi trường; nếu vẫn giữ, chúng không ghi đè tài khoản hiện có.
 
-Quản trị viên đăng nhập, mở **Tài khoản** ở thanh điều hướng, rồi tạo người dùng cho nhân viên với một trong các vai trò `admin`, `consultant`, `accountant`. Mật khẩu được băm BCrypt; giao diện/API không trả hash. Quản trị viên có thể đổi vai trò, đặt lại mật khẩu hoặc khóa tài khoản. Không thể khóa/hạ quyền tài khoản đang sử dụng hoặc vô hiệu hóa quản trị viên cuối cùng.
+Quản trị viên đăng nhập, mở **Tài khoản** ở thanh điều hướng, rồi tạo người dùng với một trong hai vai trò `admin` hoặc `tu_van`. Quản trị viên có toàn quyền; tư vấn viên chỉ xem tour/lịch khởi hành, được tạo/sửa đơn đặt tour và khách hàng, không được xóa, xem báo cáo doanh thu hoặc quản lý tài khoản. Mật khẩu được băm BCrypt; giao diện/API không trả hash. Quản trị viên có thể đổi vai trò, đặt lại mật khẩu hoặc khóa tài khoản. Không thể khóa/hạ quyền tài khoản đang sử dụng hoặc vô hiệu hóa quản trị viên cuối cùng.
+
+Migration RBAC chuyển các tài khoản vai trò cũ khác `admin` thành `tu_van`; hãy chạy `python -m alembic upgrade head` trước khi khởi động phiên bản mới.
 
 JWT chỉ được gửi trong cookie `HttpOnly`, `SameSite=Lax` ở development và `SameSite=None; Secure` ở production. Frontend không lưu token trong `localStorage`. Mỗi API request đã xác thực kiểm tra tài khoản/vai trò hiện hành trong SQLite, do đó thay đổi quyền hoặc khóa tài khoản có hiệu lực ngay. Request ghi từ trình duyệt có `Origin` phải khớp với origin frontend được tin cậy.
 

@@ -15,15 +15,15 @@ from app.config import settings
 from app.db import Base, ensure_account_session_version, get_db
 from app.main import (
     ALGORITHM, FixedWindowLimiter, ai_chat, ai_status, app, cancel_booking, create_account, create_booking,
-    create_payment, current_user, ensure_initial_admin, generate_tour_content, hash_password, list_resources,
+    create_payment, current_user, delete_booking, ensure_initial_admin, generate_tour_content, hash_password, list_resources,
     login, public_account, remaining_seats, run_ai_tool, update_account, validate_input, validate_request_origin,
-    validate_security_settings,
+    validate_security_settings, update_booking, require_admin, require_delete, require_read, require_write, dashboard,
     verify_password,
 )
 from app.exports import booking_confirmation_pdf, bookings_workbook, revenue_pdf, revenue_workbook, tours_pdf, tours_workbook
 from app.models import Account, Booking, Customer, Departure, Destination, Payment, Tour
 from app.schemas import (
-    AIChatRequest, AccountCreate, AccountUpdate, BookingCreate, LoginRequest, PaymentCreate, TourGenerationRequest,
+    AIChatRequest, AccountCreate, AccountUpdate, BookingCreate, BookingUpdate, LoginRequest, PaymentCreate, TourGenerationRequest,
 )
 
 
@@ -55,6 +55,46 @@ def db_session(tmp_path):
 
 
 ADMIN = {"id": "1", "username": "admin", "role": "admin", "name": "Quản trị viên"}
+TU_VAN = {"id": "2", "username": "staff", "role": "tu_van", "name": "Tư vấn viên"}
+
+
+def test_rbac_matrix_grants_only_requested_tu_van_access():
+    for resource in ("tours", "departures", "customers", "bookings"):
+        require_read(resource, TU_VAN)
+    for resource in ("destinations", "itineraries", "payments", "guides", "assignments", "feedback"):
+        with pytest.raises(HTTPException) as error:
+            require_read(resource, TU_VAN)
+        assert error.value.status_code == 403
+
+    for resource in ("customers", "bookings"):
+        require_write(resource, TU_VAN)
+    for resource in ("tours", "departures", "payments", "guides"):
+        with pytest.raises(HTTPException) as error:
+            require_write(resource, TU_VAN)
+        assert error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as error:
+        require_delete(TU_VAN)
+    assert error.value.status_code == 403
+    with pytest.raises(HTTPException) as error:
+        require_admin(TU_VAN)
+    assert error.value.status_code == 403
+
+    for resource in ("tours", "departures", "customers", "bookings", "payments", "guides", "feedback"):
+        require_read(resource, ADMIN)
+        require_write(resource, ADMIN)
+    require_delete(ADMIN)
+
+
+def test_tu_van_dashboard_does_not_expose_revenue_or_booking_report(db_session):
+    response = dashboard(db_session, TU_VAN)
+    assert "revenue" not in response["metrics"]
+    assert "customer_count" not in response["metrics"]
+    assert response["recent_bookings"] == []
+
+    admin_response = dashboard(db_session, ADMIN)
+    assert "revenue" in admin_response["metrics"]
+    assert admin_response["recent_bookings"] is not None
 
 
 def make_request(origin: str | None = None) -> Request:
@@ -85,6 +125,45 @@ def test_booking_capacity_and_remaining_seats(db_session):
     cancel_booking(last_seat["id"], db_session, ADMIN)
     db_session.refresh(departure)
     assert remaining_seats(db_session, departure) == 1
+
+
+def test_tu_van_can_update_booking_with_capacity_and_payment_checks(db_session):
+    customer = db_session.scalar(select(Customer))
+    departure = db_session.scalar(select(Departure))
+    created = create_booking(
+        BookingCreate(customer_id=customer.id, departure_id=departure.id, seats=1),
+        db_session, TU_VAN,
+    )
+    updated = update_booking(created["id"], BookingUpdate(seats=2), db_session, TU_VAN)
+    db_session.refresh(departure)
+    assert updated["seats"] == 2
+    assert updated["total_amount"] == 2_000_000
+    assert remaining_seats(db_session, departure) == 1
+
+    create_payment(PaymentCreate(booking_id=created["id"], amount=1_500_000, method="Chuyển khoản"),
+                   db_session, ADMIN)
+    with pytest.raises(HTTPException) as error:
+        update_booking(created["id"], BookingUpdate(seats=1), db_session, TU_VAN)
+    assert error.value.status_code == 409
+    db_session.refresh(departure)
+    assert remaining_seats(db_session, departure) == 1
+
+
+def test_only_admin_can_delete_bookings_and_seats_are_released(db_session):
+    customer = db_session.scalar(select(Customer))
+    departure = db_session.scalar(select(Departure))
+    created = create_booking(
+        BookingCreate(customer_id=customer.id, departure_id=departure.id, seats=2),
+        db_session, TU_VAN,
+    )
+    with pytest.raises(HTTPException) as error:
+        delete_booking(created["id"], db_session, TU_VAN)
+    assert error.value.status_code == 403
+
+    assert delete_booking(created["id"], db_session, ADMIN) == {"message": "Đã xóa thành công"}
+    db_session.refresh(departure)
+    assert remaining_seats(db_session, departure) == departure.capacity
+    assert db_session.get(Booking, created["id"]) is None
 
 
 def test_payments_enforce_booking_balance(db_session):
@@ -166,14 +245,14 @@ def test_startup_requires_jwt_and_bootstraps_private_initial_admin(db_session, m
 def test_login_sets_http_only_cookie_and_returns_no_jwt(db_session, monkeypatch):
     monkeypatch.setattr(settings, "jwt_secret", "a-private-random-secret-with-at-least-32-characters")
     monkeypatch.setattr(settings, "app_env", "production")
-    account = Account(username="staff", name="Nhân viên", role="consultant",
+    account = Account(username="staff", name="Nhân viên", role="tu_van",
                       password_hash=hash_password("correct-private-password"), is_active=True)
     db_session.add(account)
     db_session.commit()
     response = Response()
     result = login(LoginRequest(username="staff", password="correct-private-password"),
                    make_request(), response, db_session)
-    assert result["user"]["role"] == "consultant"
+    assert result["user"]["role"] == "tu_van"
     assert "access_token" not in result
     cookie = response.headers["set-cookie"].lower()
     assert "viettour_session=" in cookie
@@ -184,7 +263,7 @@ def test_login_sets_http_only_cookie_and_returns_no_jwt(db_session, monkeypatch)
 
 
 def test_login_rejects_invalid_password_and_disabled_account(db_session):
-    account = Account(username="locked", name="Tài khoản khóa", role="consultant",
+    account = Account(username="locked", name="Tài khoản khóa", role="tu_van",
                       password_hash=hash_password("correct-private-password"), is_active=False)
     db_session.add(account)
     db_session.commit()
@@ -199,7 +278,7 @@ def test_login_rejects_invalid_password_and_disabled_account(db_session):
 def test_cookie_session_round_trip_through_api(db_session, monkeypatch):
     monkeypatch.setattr(settings, "jwt_secret", "a-private-random-secret-with-at-least-32-characters")
     monkeypatch.setattr(settings, "app_env", "development")
-    account = Account(username="apiuser", name="API nhân viên", role="consultant",
+    account = Account(username="apiuser", name="API nhân viên", role="tu_van",
                       password_hash=hash_password("correct-private-password"), is_active=True)
     db_session.add(account)
     db_session.commit()
@@ -217,7 +296,7 @@ def test_cookie_session_round_trip_through_api(db_session, monkeypatch):
         assert login_response.json()["user"]["username"] == "apiuser"
         assert login_response.cookies.get("viettour_session")
         assert "httponly" in login_response.headers["set-cookie"].lower()
-        assert client.get("/api/me").json()["role"] == "consultant"
+        assert client.get("/api/me").json()["role"] == "tu_van"
         assert client.get("/api/users").status_code == 403
         assert client.post("/api/auth/logout").status_code == 200
         assert client.get("/api/me").status_code == 401
@@ -227,7 +306,7 @@ def test_cookie_session_round_trip_through_api(db_session, monkeypatch):
 
 def test_cookie_auth_uses_current_database_role_and_rejects_disabled_user(db_session, monkeypatch):
     monkeypatch.setattr(settings, "jwt_secret", "a-private-random-secret-with-at-least-32-characters")
-    account = Account(username="staff", name="Nhân viên", role="consultant",
+    account = Account(username="staff", name="Nhân viên", role="tu_van",
                       password_hash=hash_password("correct-private-password"), is_active=True)
     db_session.add(account)
     db_session.commit()
@@ -238,10 +317,10 @@ def test_cookie_auth_uses_current_database_role_and_rejects_disabled_user(db_ses
         "client": ("testclient", 123), "scheme": "http", "server": ("testserver", 80),
         "path": "/api/me", "query_string": b"", "http_version": "1.1", "root_path": "",
     })
-    assert current_user(request, db_session)["role"] == "consultant"
-    account.role = "accountant"
+    assert current_user(request, db_session)["role"] == "tu_van"
+    account.role = "admin"
     db_session.commit()
-    assert current_user(request, db_session)["role"] == "accountant"
+    assert current_user(request, db_session)["role"] == "admin"
     account.is_active = False
     db_session.commit()
     with pytest.raises(HTTPException) as error:
@@ -257,7 +336,7 @@ def test_admin_account_management_hashes_password_and_prevents_lockout(db_sessio
     db_session.commit()
     admin = {**ADMIN, "id": str(admin_account.id)}
     created = create_account(
-        AccountCreate(username="staff01", name="Nhân viên", role="consultant", password="private-new-password"),
+        AccountCreate(username="staff01", name="Nhân viên", role="tu_van", password="private-new-password"),
         db_session, admin,
     )
     stored = db_session.scalar(select(Account).where(Account.username == "staff01"))
@@ -277,7 +356,7 @@ def test_admin_account_management_hashes_password_and_prevents_lockout(db_sessio
     assert current_user(session_request, db_session)["username"] == "staff01"
 
     with pytest.raises(HTTPException) as error:
-        update_account(admin_account.id, AccountUpdate(role="consultant"), db_session, admin)
+        update_account(admin_account.id, AccountUpdate(role="tu_van"), db_session, admin)
     assert error.value.status_code == 409
     with pytest.raises(HTTPException) as error:
         update_account(admin_account.id, AccountUpdate(is_active=False), db_session, admin)
