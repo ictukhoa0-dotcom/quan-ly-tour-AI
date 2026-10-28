@@ -26,6 +26,7 @@ export const resourceFields: Record<ResourceName, Field[]> = {
     { key: "price", label: "Giá (₫)", kind: "number", min: 0, required: true },
     { key: "category", label: "Danh mục", required: true },
     { key: "status", label: "Trạng thái", kind: "select", options: select([["Đang mở", "Đang mở"], ["Tạm dừng", "Tạm dừng"]]) },
+    { key: "image_url", label: "Ảnh tour (URL)", kind: "image-url" },
     { key: "description", label: "Mô tả", kind: "textarea" },
   ],
   destinations: [

@@ -32,6 +32,7 @@ class Tour(Base):
     price: Mapped[int] = mapped_column(Integer)
     category: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(Text, default="")
+    image_url: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(30), default="Đang mở")
     __table_args__ = (CheckConstraint("duration_days > 0"), CheckConstraint("price >= 0"))
 
@@ -64,6 +65,7 @@ class Customer(Base):
     phone: Mapped[str] = mapped_column(String(20), unique=True)
     email: Mapped[str] = mapped_column(String(160), default="")
     address: Mapped[str] = mapped_column(String(240), default="")
+    password_hash: Mapped[str] = mapped_column(String(128), default="")
 
 
 class Booking(Base):

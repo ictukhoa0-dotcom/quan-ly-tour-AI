@@ -236,7 +236,25 @@ export default function EntityPage({ resource, rows, datasets, role, busy, onRel
         <div className="table-wrap"><table><thead><tr>{columns[resource].map(([key, label]) => <th key={key}>{label}</th>)}{hasRowActions && <th className="actions-head">Thao tác</th>}</tr></thead>
           <tbody>
             {list.map((row) => <tr key={row.id}>
-              {columns[resource].map(([key]) => <td key={key}>{key === "price" || key === "amount" || key === "total_amount" || key === "paid_amount" || key === "amount_due" ? money(Number(row[key] ?? 0)) :
+              {columns[resource].map(([key]) => <td key={key}>{
+                key === "name" && resource === "tours" ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    {row.image_url ? (
+                      <img
+                        src={String(row.image_url)}
+                        alt=""
+                        style={{ width: "38px", height: "38px", borderRadius: "8px", objectFit: "cover", flexShrink: 0, border: "1px solid #e2e8f0" }}
+                        onError={(e) => { (e.target as HTMLElement).style.display = "none"; }}
+                      />
+                    ) : (
+                      <div style={{ width: "38px", height: "38px", borderRadius: "8px", background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", color: "#94a3b8", flexShrink: 0 }}>
+                        Tour
+                      </div>
+                    )}
+                    <span style={{ fontWeight: 600 }}>{String(row.name)}</span>
+                  </div>
+                ) :
+                key === "price" || key === "amount" || key === "total_amount" || key === "paid_amount" || key === "amount_due" ? money(Number(row[key] ?? 0)) :
                 key === "departure_date" || key === "created_at" || key === "paid_at" ? dateText(String(row[key] ?? "")) :
                 key === "duration_days" ? `${row[key]} ngày` :
                 key === "remaining_seats" ? <span className={Number(row[key]) <= 3 ? "seat-low" : ""}>{row[key]} chỗ</span> :

@@ -11,13 +11,13 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from jose import JWTError, jwt
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import Base, SessionLocal, engine, ensure_account_session_version, get_db
+from .db import Base, SessionLocal, engine, ensure_account_session_version, ensure_customer_password_hash, ensure_tour_image_url, get_db
 from .exports import (
     booking_confirmation_pdf, bookings_workbook, revenue_pdf, revenue_workbook, tours_pdf, tours_workbook,
 )
@@ -48,6 +48,8 @@ READ_ROLES.update({
 })
 Base.metadata.create_all(bind=engine)
 ensure_account_session_version(engine)
+ensure_customer_password_hash(engine)
+ensure_tour_image_url(engine)
 DUMMY_PASSWORD_HASH = bcrypt.hashpw(secrets.token_bytes(32), bcrypt.gensalt()).decode("ascii")
 
 
@@ -71,7 +73,9 @@ def validate_request_origin(request: Request) -> None:
     origin = request.headers.get("origin")
     trusted_origins = {settings.frontend_origin}
     if settings.app_env == "development":
-        trusted_origins.add("http://127.0.0.1:5173")
+        for port in ("5173", "5174", "5175"):
+            trusted_origins.add(f"http://localhost:{port}")
+            trusted_origins.add(f"http://127.0.0.1:{port}")
     if origin and origin not in trusted_origins and request.method not in {"GET", "HEAD", "OPTIONS"}:
         raise HTTPException(status_code=403, detail="Nguồn yêu cầu không được phép")
 
@@ -318,7 +322,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="VietTour AI API", version="1.0.0", lifespan=lifespan)
 allowed_origins = [settings.frontend_origin]
 if settings.app_env == "development":
-    allowed_origins.append("http://127.0.0.1:5173")
+    for port in ("5173", "5174", "5175"):
+        allowed_origins.append(f"http://localhost:{port}")
+        allowed_origins.append(f"http://127.0.0.1:{port}")
+allowed_origins = list(set(allowed_origins))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -500,6 +507,307 @@ def export_booking_pdf(booking_id: int, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail=str(error)) from error
     return Response(content, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="booking-{booking_id}.pdf"'})
+
+
+class PublicBookingRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=8, max_length=20)
+    email: str = Field(default="", max_length=160)
+    address: str = Field(default="", max_length=240)
+    departure_id: int
+    seats: int = Field(gt=0, le=50)
+    notes: str = Field(default="", max_length=500)
+
+
+class PublicAIChatRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=1000)
+
+
+@app.get("/api/public/portal")
+def public_portal_data(db: Session = Depends(get_db)):
+    tours = db.scalars(select(Tour).where(Tour.status == "Đang mở")).all()
+    destinations = db.scalars(select(Destination)).all()
+    departures = db.scalars(
+        select(Departure).where(
+            Departure.status == "Đang mở",
+            Departure.departure_date >= date.today().isoformat()
+        ).order_by(Departure.departure_date)
+    ).all()
+    itineraries = db.scalars(select(Itinerary).order_by(Itinerary.tour_id, Itinerary.day_number)).all()
+    feedbacks = db.scalars(select(Feedback).order_by(Feedback.id.desc()).limit(10)).all()
+
+    dest_map = {d.id: d for d in destinations}
+    tour_list = []
+    for t in tours:
+        dest = dest_map.get(t.destination_id)
+        tour_list.append({
+            **serialize(t),
+            "destination_name": dest.name if dest else "",
+            "region": dest.region if dest else "Việt Nam",
+        })
+
+    dep_list = []
+    for dep in departures:
+        dep_list.append({
+            **serialize(dep),
+            "remaining_seats": remaining_seats(db, dep),
+        })
+
+    return {
+        "tours": tour_list,
+        "destinations": [serialize(d) for d in destinations],
+        "departures": dep_list,
+        "itineraries": [serialize(it) for it in itineraries],
+        "feedbacks": [serialize(f) for f in feedbacks],
+    }
+
+
+@app.post("/api/public/book")
+def public_book(payload: PublicBookingRequest, request: Request, db: Session = Depends(get_db)):
+    limit_requests(request, "public_book", 15)
+    departure = get_entity(db, Departure, payload.departure_id, "lịch khởi hành")
+    if departure.status != "Đang mở" or departure.departure_date < date.today().isoformat():
+        raise HTTPException(status_code=409, detail="Lịch khởi hành đã đóng hoặc đã qua")
+
+    clean_phone = payload.phone.strip()
+    customer = db.scalar(select(Customer).where(Customer.phone == clean_phone))
+    if not customer:
+        customer = Customer(
+            name=payload.name.strip(),
+            phone=clean_phone,
+            email=payload.email.strip(),
+            address=payload.address.strip() or "Khách đặt trực tuyến",
+        )
+        db.add(customer)
+        db.flush()
+    else:
+        if payload.name.strip():
+            customer.name = payload.name.strip()
+        if payload.email.strip():
+            customer.email = payload.email.strip()
+
+    updated = db.execute(
+        update(Departure)
+        .where(Departure.id == departure.id, Departure.status == "Đang mở",
+               Departure.departure_date >= date.today().isoformat(),
+               Departure.reserved_seats + payload.seats <= Departure.capacity)
+        .values(reserved_seats=Departure.reserved_seats + payload.seats)
+    )
+    if updated.rowcount != 1:
+        db.refresh(departure)
+        raise HTTPException(status_code=409, detail=f"Chỉ còn {remaining_seats(db, departure)} chỗ trống")
+
+    tour = get_entity(db, Tour, departure.tour_id, "tour")
+    booking_code = f"VT{datetime.now():%y%m%d}{secrets.token_hex(3).upper()}"
+    booking = Booking(
+        booking_code=booking_code,
+        customer_id=customer.id,
+        departure_id=departure.id,
+        seats=payload.seats,
+        total_amount=tour.price * payload.seats,
+        status="Đã xác nhận",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(booking)
+    db.commit()
+    return {
+        "success": True,
+        "booking_code": booking.booking_code,
+        "total_amount": booking.total_amount,
+        "customer_name": customer.name,
+        "tour_name": tour.name,
+        "departure_date": departure.departure_date,
+        "seats": booking.seats,
+        "message": "Đặt tour thành công! Nhân viên VietTour AI sẽ liên hệ hỗ trợ bạn sớm nhất."
+    }
+
+
+@app.post("/api/public/ai-chat")
+def public_ai_chat(payload: PublicAIChatRequest, request: Request, db: Session = Depends(get_db)):
+    limit_requests(request, "public_ai_chat", 20)
+    prompt_lower = payload.prompt.lower()
+    tours = db.scalars(select(Tour).where(Tour.status == "Đang mở")).all()
+    destinations = db.scalars(select(Destination)).all()
+    departures = db.scalars(
+        select(Departure).where(Departure.status == "Đang mở", Departure.departure_date >= date.today().isoformat())
+    ).all()
+
+    matched = []
+    for t in tours:
+        dest = next((d for d in destinations if d.id == t.destination_id), None)
+        dest_name = dest.name.lower() if dest else ""
+        region = dest.region.lower() if dest else ""
+        if (dest_name and dest_name in prompt_lower) or (region and region in prompt_lower) or t.name.lower() in prompt_lower or t.category.lower() in prompt_lower:
+            matched.append(t)
+
+    selected = matched[:3] if matched else tours[:3]
+    reply_lines = ["Xin chào quý khách! VietTour AI hân hạnh gợi ý cho bạn các tour nổi bật phù hợp:"]
+    for i, t in enumerate(selected, 1):
+        dest = next((d for d in destinations if d.id == t.destination_id), None)
+        t_deps = [dep for dep in departures if dep.tour_id == t.id and remaining_seats(db, dep) > 0]
+        dates_str = ", ".join(d.departure_date for d in t_deps[:2]) if t_deps else "Sắp có lịch mới"
+        reply_lines.append(
+            f"\n🌟 **{i}. {t.name}** ({t.duration_days} ngày - {t.category})\n"
+            f"   • Điểm đến: {dest.name if dest else 'Việt Nam'} ({dest.region if dest else ''})\n"
+            f"   • Giá tour: {t.price:,.0f} ₫/khách\n"
+            f"   • Khởi hành: {dates_str}\n"
+            f"   • Hành trình: {t.description}"
+        )
+    reply_lines.append("\n👉 Bạn có thể bấm chọn tour trực tiếp trên trang chủ để xem lịch trình ngày và đặt chỗ nhanh chóng!")
+    return {"reply": "\n".join(reply_lines), "tour_ids": [t.id for t in selected]}
+
+
+class CustomerRegisterRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=8, max_length=20)
+    password: str = Field(min_length=6, max_length=72)
+    email: str = Field(default="", max_length=160)
+    address: str = Field(default="", max_length=240)
+
+
+class CustomerLoginRequest(BaseModel):
+    phone: str = Field(min_length=6, max_length=160)
+    password: str = Field(min_length=1, max_length=72)
+
+
+def serialize_customer(customer: Customer) -> dict[str, Any]:
+    return {
+        "id": customer.id,
+        "name": customer.name,
+        "phone": customer.phone,
+        "email": customer.email,
+        "address": customer.address,
+    }
+
+
+def current_customer(request: Request, db: Session = Depends(get_db)) -> Customer:
+    token = request.cookies.get("viettour_customer_session")
+    if not token:
+        auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+    if not token:
+        raise HTTPException(status_code=401, detail="Vui lòng đăng nhập tài khoản khách hàng")
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
+        if payload.get("typ") != "customer":
+            raise HTTPException(status_code=401, detail="Phiên đăng nhập không hợp lệ")
+        customer_id = int(payload["sub"])
+    except (JWTError, KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Phiên đăng nhập đã hết hạn") from None
+    customer = db.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(status_code=401, detail="Tài khoản khách hàng không tồn tại")
+    return customer
+
+
+@app.post("/api/public/customer/register")
+def customer_register(payload: CustomerRegisterRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    limit_requests(request, "customer_register", 10)
+    clean_phone = payload.phone.strip()
+    clean_email = payload.email.strip()
+
+    existing = db.scalar(select(Customer).where(Customer.phone == clean_phone))
+    if existing:
+        if existing.password_hash:
+            raise HTTPException(status_code=409, detail="Số điện thoại này đã được đăng ký tài khoản. Vui lòng đăng nhập.")
+        existing.name = payload.name.strip()
+        if clean_email:
+            existing.email = clean_email
+        if payload.address.strip():
+            existing.address = payload.address.strip()
+        existing.password_hash = hash_password(payload.password)
+        customer = existing
+    else:
+        customer = Customer(
+            name=payload.name.strip(),
+            phone=clean_phone,
+            email=clean_email,
+            address=payload.address.strip(),
+            password_hash=hash_password(payload.password),
+        )
+        db.add(customer)
+
+    db.commit()
+    db.refresh(customer)
+
+    token = jwt.encode(
+        {"sub": str(customer.id), "typ": "customer",
+         "exp": datetime.now(timezone.utc) + timedelta(days=30)},
+        settings.jwt_secret, algorithm=ALGORITHM,
+    )
+    response.set_cookie(
+        key="viettour_customer_session",
+        value=token,
+        max_age=30 * 24 * 60 * 60,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="none" if settings.app_env == "production" else "lax",
+        path="/",
+    )
+    return {"customer": serialize_customer(customer), "token": token}
+
+
+@app.post("/api/public/customer/login")
+def customer_login(payload: CustomerLoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    limit_requests(request, "customer_login", 15)
+    query_val = payload.phone.strip()
+    customer = db.scalar(select(Customer).where((Customer.phone == query_val) | (Customer.email == query_val)))
+
+    password_hash = customer.password_hash if (customer and customer.password_hash) else DUMMY_PASSWORD_HASH
+    password_matches = verify_password(payload.password, password_hash)
+    if customer is None or not customer.password_hash or not password_matches:
+        raise HTTPException(status_code=401, detail="Số điện thoại/email hoặc mật khẩu không chính xác")
+
+    token = jwt.encode(
+        {"sub": str(customer.id), "typ": "customer",
+         "exp": datetime.now(timezone.utc) + timedelta(days=30)},
+        settings.jwt_secret, algorithm=ALGORITHM,
+    )
+    response.set_cookie(
+        key="viettour_customer_session",
+        value=token,
+        max_age=30 * 24 * 60 * 60,
+        httponly=True,
+        secure=settings.app_env == "production",
+        samesite="none" if settings.app_env == "production" else "lax",
+        path="/",
+    )
+    return {"customer": serialize_customer(customer), "token": token}
+
+
+@app.get("/api/public/customer/me")
+def customer_me(customer: Customer = Depends(current_customer)):
+    return {"customer": serialize_customer(customer)}
+
+
+@app.post("/api/public/customer/logout")
+def customer_logout(response: Response):
+    response.delete_cookie(key="viettour_customer_session", path="/", httponly=True,
+                           secure=settings.app_env == "production",
+                           samesite="none" if settings.app_env == "production" else "lax")
+    return {"message": "Đã đăng xuất"}
+
+
+@app.get("/api/public/customer/bookings")
+def customer_bookings(customer: Customer = Depends(current_customer), db: Session = Depends(get_db)):
+    bookings = db.scalars(select(Booking).where(Booking.customer_id == customer.id).order_by(Booking.id.desc())).all()
+    result = []
+    for b in bookings:
+        departure = db.get(Departure, b.departure_id)
+        tour = db.get(Tour, departure.tour_id) if departure else None
+        result.append({
+            "id": b.id,
+            "booking_code": b.booking_code,
+            "tour_name": tour.name if tour else "Tour du lịch",
+            "departure_date": departure.departure_date if departure else "",
+            "seats": b.seats,
+            "total_amount": b.total_amount,
+            "paid_amount": b.paid_amount,
+            "status": b.status,
+            "created_at": b.created_at,
+        })
+    return {"bookings": result}
 
 
 @app.get("/api/{resource}")

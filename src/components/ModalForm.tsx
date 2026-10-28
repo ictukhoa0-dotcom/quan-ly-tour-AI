@@ -49,7 +49,7 @@ export default function ModalForm({ title, fields, initial, onClose, onSubmit }:
         <form onSubmit={submit}>
           <div className="form-grid">
             {fields.map((field) => (
-              <label className={`form-field ${field.kind === "textarea" ? "field-wide" : ""}`} key={field.key}>
+              <label className={`form-field ${field.kind === "textarea" || field.kind === "image-url" ? "field-wide" : ""}`} key={field.key}>
                 <span>{field.label}{field.required && <b> *</b>}</span>
                 {field.kind === "textarea" ? (
                   <textarea required={field.required} rows={3} value={values[field.key] ?? ""} onChange={(event) => setValues({ ...values, [field.key]: event.target.value })} />
@@ -58,6 +58,27 @@ export default function ModalForm({ title, fields, initial, onClose, onSubmit }:
                     <option value="">Chọn {field.label.toLowerCase()}</option>
                     {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
+                ) : field.kind === "image-url" ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <input
+                      type="text"
+                      placeholder="Dán URL ảnh vào đây (https://...)"
+                      value={values[field.key] ?? ""}
+                      onChange={(event) => setValues({ ...values, [field.key]: event.target.value })}
+                      style={{ width: "100%" }}
+                    />
+                    {values[field.key] && (
+                      <div style={{ position: "relative", borderRadius: "10px", overflow: "hidden", height: "140px", background: "#f1f5f9" }}>
+                        <img
+                          src={values[field.key]}
+                          alt="Preview ảnh tour"
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                        />
+                        <span style={{ position: "absolute", bottom: "6px", right: "8px", fontSize: "10px", background: "rgba(0,0,0,0.5)", color: "#fff", borderRadius: "4px", padding: "2px 6px" }}>Preview</span>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <input type={field.kind === "number" ? "number" : field.kind === "date" ? "date" : field.kind === "email" ? "email" : "text"}
                     min={field.min} max={field.max} required={field.required} value={values[field.key] ?? ""}

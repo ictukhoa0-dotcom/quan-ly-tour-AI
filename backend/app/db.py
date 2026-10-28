@@ -30,6 +30,30 @@ def ensure_account_session_version(database_engine: Engine = engine) -> None:
             ))
 
 
+def ensure_customer_password_hash(database_engine: Engine = engine) -> None:
+    inspector = inspect(database_engine)
+    if "customers" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("customers")}
+    if "password_hash" not in columns:
+        with database_engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE customers ADD COLUMN password_hash VARCHAR(128) NOT NULL DEFAULT ''"
+            ))
+
+
+def ensure_tour_image_url(database_engine: Engine = engine) -> None:
+    inspector = inspect(database_engine)
+    if "tours" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("tours")}
+    if "image_url" not in columns:
+        with database_engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE tours ADD COLUMN image_url VARCHAR(500) NOT NULL DEFAULT ''"
+            ))
+
+
 def get_db():
     db = SessionLocal()
     try:

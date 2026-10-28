@@ -1,4 +1,4 @@
-import type { Account, DashboardData, Row, User } from "./types";
+import type { Account, CustomerBookingItem, CustomerUser, DashboardData, PortalData, PublicBookingPayload, PublicBookingResponse, Row, User } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 
@@ -158,4 +158,16 @@ export const api = {
     request<Account>("/users", { method: "POST", body: JSON.stringify(payload) }),
   updateAccount: (id: number, payload: Partial<Pick<Account, "name" | "role" | "is_active">> & { password?: string }) =>
     request<Account>(`/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  publicPortal: () => request<PortalData>("/public/portal"),
+  publicBook: (payload: PublicBookingPayload) =>
+    request<PublicBookingResponse>("/public/book", { method: "POST", body: JSON.stringify(payload) }),
+  publicAIChat: (prompt: string) =>
+    request<{ reply: string; tour_ids: number[] }>("/public/ai-chat", { method: "POST", body: JSON.stringify({ prompt }) }),
+  customerRegister: (payload: { name: string; phone: string; password: string; email?: string; address?: string }) =>
+    request<{ customer: CustomerUser; token: string }>("/public/customer/register", { method: "POST", body: JSON.stringify(payload) }),
+  customerLogin: (payload: { phone: string; password: string }) =>
+    request<{ customer: CustomerUser; token: string }>("/public/customer/login", { method: "POST", body: JSON.stringify(payload) }),
+  customerMe: () => request<{ customer: CustomerUser }>("/public/customer/me"),
+  customerLogout: () => request<{ message: string }>("/public/customer/logout", { method: "POST" }),
+  customerBookings: () => request<{ bookings: CustomerBookingItem[] }>("/public/customer/bookings"),
 };
