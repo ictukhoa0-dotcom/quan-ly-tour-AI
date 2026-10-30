@@ -21,10 +21,11 @@ type PortalHeaderProps = {
   customer: CustomerUser | null;
   darkMode: boolean;
   onToggleDarkMode: () => void;
-  onOpenCustomerAuth: () => void;
+  onOpenAuth?: (tab?: "customer" | "admin") => void;
+  onOpenCustomerAuth?: () => void;
   onOpenCustomerBookings: () => void;
   onCustomerLogout: () => void;
-  onOpenLogin: () => void;
+  onOpenLogin?: () => void;
   onGoToAdmin: () => void;
   onOpenBookingPage?: () => void;
   onSelectRegion?: (region: string) => void;
@@ -37,6 +38,7 @@ export default function PortalHeader({
   customer,
   darkMode,
   onToggleDarkMode,
+  onOpenAuth,
   onOpenCustomerAuth,
   onOpenCustomerBookings,
   onCustomerLogout,
@@ -50,6 +52,16 @@ export default function PortalHeader({
   const [selectedCity, setSelectedCity] = useState("Hà Nội");
   const [domesticOpen, setDomesticOpen] = useState(false);
   const [customerMenuOpen, setCustomerMenuOpen] = useState(false);
+
+  const handleOpenLogin = (tab: "customer" | "admin" = "customer") => {
+    if (onOpenAuth) {
+      onOpenAuth(tab);
+    } else if (tab === "admin" && onOpenLogin) {
+      onOpenLogin();
+    } else if (onOpenCustomerAuth) {
+      onOpenCustomerAuth();
+    }
+  };
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md shadow-sm border-b border-slate-200 dark:border-slate-800 transition-colors">
@@ -238,8 +250,8 @@ export default function PortalHeader({
               {darkMode ? <Sun className="w-5 h-5 text-amber-400" /> : <Moon className="w-5 h-5" />}
             </button>
 
-            {/* Customer Authentication Area */}
-            {customer ? (
+            {/* Customer Authentication Area (when customer is logged in) */}
+            {customer && (
               <div className="relative">
                 <button
                   type="button"
@@ -267,6 +279,16 @@ export default function PortalHeader({
                       <Package className="w-4 h-4 text-blue-600" />
                       <span>Đơn tour của tôi</span>
                     </button>
+                    {!user && (
+                      <button
+                        type="button"
+                        onClick={() => { setCustomerMenuOpen(false); handleOpenLogin("admin"); }}
+                        className="w-full flex items-center gap-2 p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left text-slate-700 dark:text-slate-200 font-medium transition-colors cursor-pointer"
+                      >
+                        <Shield className="w-4 h-4 text-indigo-600" />
+                        <span>Đăng nhập Quản trị</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => { setCustomerMenuOpen(false); onCustomerLogout(); }}
@@ -278,37 +300,31 @@ export default function PortalHeader({
                   </div>
                 )}
               </div>
-            ) : (
-              <button
-                type="button"
-                onClick={onOpenCustomerAuth}
-                className="flex items-center gap-1.5 bg-gradient-to-r from-blue-700 to-indigo-600 hover:from-blue-800 hover:to-indigo-700 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-blue-500/25 transition-all transform hover:-translate-y-0.5 cursor-pointer"
-              >
-                <User className="w-4 h-4" />
-                <span>Đăng nhập / Đăng ký</span>
-              </button>
             )}
 
-            {/* Admin Back-Office Switcher */}
-            {user ? (
+            {/* Admin Back-Office Switcher (when admin/staff is logged in) */}
+            {user && (
               <button
                 type="button"
                 onClick={onGoToAdmin}
-                className="hidden sm:flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white px-3.5 py-2 rounded-xl text-xs font-semibold shadow-xs transition-all cursor-pointer"
+                className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white px-3.5 py-2 rounded-xl text-xs font-semibold shadow-xs transition-all cursor-pointer"
                 title="Vào Bảng điều khiển quản trị"
               >
                 <Shield className="w-3.5 h-3.5 text-amber-400" />
                 <span>Quản trị ({user.role})</span>
               </button>
-            ) : (
+            )}
+
+            {/* Single Unified Login Button (when neither customer nor admin is logged in) */}
+            {!customer && !user && (
               <button
                 type="button"
-                onClick={onOpenLogin}
-                className="hidden md:flex items-center gap-1 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 text-xs font-semibold px-2 py-1 transition-colors cursor-pointer"
-                title="Dành cho nhân viên & quản trị viên"
+                onClick={() => handleOpenLogin("customer")}
+                className="flex items-center gap-1.5 bg-gradient-to-r from-blue-700 to-indigo-600 hover:from-blue-800 hover:to-indigo-700 text-white px-4 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-blue-500/25 transition-all transform hover:-translate-y-0.5 cursor-pointer"
+                title="Đăng nhập tài khoản khách hàng hoặc quản trị viên"
               >
-                <Shield className="w-3.5 h-3.5" />
-                <span>Admin</span>
+                <User className="w-4 h-4" />
+                <span>Đăng nhập</span>
               </button>
             )}
           </div>

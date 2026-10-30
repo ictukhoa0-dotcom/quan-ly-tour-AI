@@ -172,6 +172,13 @@ export default function App() {
           user={user}
           darkMode={darkMode}
           onToggleDarkMode={() => setDarkMode((prev) => !prev)}
+          onAdminLoginSuccess={(adminUser) => {
+            setUser(adminUser);
+            setAuthReady(true);
+            setViewMode("admin");
+            notify(`Đăng nhập thành công! Chào mừng ${adminUser.name}.`, "success");
+            void loadWorkspace(adminUser.role).catch(() => undefined);
+          }}
           onOpenLogin={() => setLoginModalOpen(true)}
           onGoToAdmin={() => setViewMode("admin")}
           onNotify={notify}

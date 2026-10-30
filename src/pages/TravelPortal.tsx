@@ -28,7 +28,8 @@ type TravelPortalProps = {
   user: User | null;
   darkMode: boolean;
   onToggleDarkMode: () => void;
-  onOpenLogin: () => void;
+  onOpenLogin?: () => void;
+  onAdminLoginSuccess?: (user: User) => void;
   onGoToAdmin: () => void;
   onNotify: (message: string, kind?: "success" | "error") => void;
 };
@@ -38,6 +39,7 @@ export default function TravelPortal({
   darkMode,
   onToggleDarkMode,
   onOpenLogin,
+  onAdminLoginSuccess,
   onGoToAdmin,
   onNotify,
 }: TravelPortalProps) {
@@ -49,10 +51,16 @@ export default function TravelPortal({
   const [bookingSelectedTourId, setBookingSelectedTourId] = useState<number | undefined>();
   const [bookingSelectedDepId, setBookingSelectedDepId] = useState<number | undefined>();
 
-  // Customer Authentication state
+  // Unified Authentication state
   const [customer, setCustomer] = useState<CustomerUser | null>(null);
-  const [customerAuthOpen, setCustomerAuthOpen] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalRoleTab, setAuthModalRoleTab] = useState<"customer" | "admin">("customer");
   const [customerBookingsOpen, setCustomerBookingsOpen] = useState(false);
+
+  const handleOpenAuth = (tab: "customer" | "admin" = "customer") => {
+    setAuthModalRoleTab(tab);
+    setAuthModalOpen(true);
+  };
 
   // Filter state
   const [selectedRegion, setSelectedRegion] = useState<string | undefined>();
@@ -160,10 +168,11 @@ export default function TravelPortal({
         customer={customer}
         darkMode={darkMode}
         onToggleDarkMode={onToggleDarkMode}
-        onOpenCustomerAuth={() => setCustomerAuthOpen(true)}
+        onOpenAuth={handleOpenAuth}
+        onOpenCustomerAuth={() => handleOpenAuth("customer")}
         onOpenCustomerBookings={() => setCustomerBookingsOpen(true)}
         onCustomerLogout={handleCustomerLogout}
-        onOpenLogin={onOpenLogin}
+        onOpenLogin={() => handleOpenAuth("admin")}
         onGoToAdmin={onGoToAdmin}
         onOpenBookingPage={() => handleOpenBookingPage()}
         onSelectRegion={handleSelectRegion}
@@ -188,7 +197,7 @@ export default function TravelPortal({
             onNotify("Đặt tour thành công! Cảm ơn quý khách đã tin tưởng VietTour AI.", "success");
           }}
           onNotify={onNotify}
-          onOpenCustomerAuth={() => setCustomerAuthOpen(true)}
+          onOpenCustomerAuth={() => handleOpenAuth("customer")}
         />
       ) : (
         <>
@@ -269,15 +278,22 @@ export default function TravelPortal({
         onToggle={() => setAiChatOpen((prev) => !prev)}
       />
 
-      {/* Customer Authentication Modal (Login / Register) */}
+      {/* Unified Authentication Modal (Customer & Admin) */}
       <CustomerAuthModal
-        isOpen={customerAuthOpen}
-        onClose={() => setCustomerAuthOpen(false)}
+        isOpen={authModalOpen}
+        initialRoleTab={authModalRoleTab}
+        onClose={() => setAuthModalOpen(false)}
         onSuccess={(loggedCustomer) => {
           setCustomer(loggedCustomer);
           onNotify(`Chào mừng quý khách ${loggedCustomer.name}!`, "success");
         }}
-        onOpenAdminLogin={onOpenLogin}
+        onAdminSuccess={(adminUser) => {
+          if (onAdminLoginSuccess) {
+            onAdminLoginSuccess(adminUser);
+          } else {
+            onNotify(`Đăng nhập quản trị thành công! Chào mừng ${adminUser.name}.`, "success");
+          }
+        }}
       />
 
       {/* Customer My Bookings Modal */}
