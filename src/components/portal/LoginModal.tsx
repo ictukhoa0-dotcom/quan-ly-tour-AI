@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { X, Lock, User, ArrowRight, Shield } from "lucide-react";
 
 type LoginModalProps = {
@@ -6,6 +6,8 @@ type LoginModalProps = {
   loginData: { username: string; password: string };
   loginBusy: boolean;
   loginError: string;
+  rememberMe?: boolean;
+  onChangeRememberMe?: (val: boolean) => void;
   onClose: () => void;
   onChangeLogin: (data: { username: string; password: string }) => void;
   onSubmitLogin: (e: React.FormEvent<HTMLFormElement>) => void;
@@ -16,11 +18,24 @@ export default function LoginModal({
   loginData,
   loginBusy,
   loginError,
+  rememberMe,
+  onChangeRememberMe,
   onClose,
   onChangeLogin,
   onSubmitLogin,
 }: LoginModalProps) {
+  const [localRemember, setLocalRemember] = useState(() => {
+    return localStorage.getItem("viettour_remember_admin") === "true";
+  });
+
   if (!isOpen) return null;
+
+  const currentRemember = rememberMe !== undefined ? rememberMe : localRemember;
+
+  const handleToggleRemember = (val: boolean) => {
+    setLocalRemember(val);
+    onChangeRememberMe?.(val);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-fadeIn">
@@ -86,6 +101,19 @@ export default function LoginModal({
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:border-blue-500"
               />
             </div>
+          </div>
+
+          <div className="flex items-center justify-between py-0.5">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
+              <input
+                type="checkbox"
+                checked={currentRemember}
+                onChange={(e) => handleToggleRemember(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+              />
+              <span>Ghi nhớ đăng nhập</span>
+            </label>
+            <span className="text-[11px] text-slate-400">Duy trì 30 ngày</span>
           </div>
 
           <button

@@ -187,6 +187,7 @@ def test_payments_enforce_booking_balance(db_session):
 
 def test_ai_content_has_safe_deterministic_fallback(db_session, monkeypatch):
     monkeypatch.setattr(settings, "ai_api_key", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
     result = asyncio.run(generate_tour_content(
         TourGenerationRequest(destination="Ninh Bình", duration_days=2, style="thiên nhiên"),
         db_session,
@@ -200,6 +201,7 @@ def test_ai_content_has_safe_deterministic_fallback(db_session, monkeypatch):
 
 def test_ai_status_never_exposes_secret(monkeypatch):
     monkeypatch.setattr(settings, "ai_api_key", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
     assert ai_status(ADMIN) == {"configured": False, "mode": "deterministic"}
     monkeypatch.setattr(settings, "ai_api_key", "server-side-test-secret")
     response = ai_status(ADMIN)

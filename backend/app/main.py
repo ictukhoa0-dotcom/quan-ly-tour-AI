@@ -623,7 +623,7 @@ def public_book(payload: PublicBookingRequest, request: Request, db: Session = D
 
 
 @app.post("/api/public/ai-chat")
-def public_ai_chat(payload: PublicAIChatRequest, request: Request, db: Session = Depends(get_db)):
+async def public_ai_chat(payload: PublicAIChatRequest, request: Request, db: Session = Depends(get_db)):
     limit_requests(request, "public_ai_chat", 20)
     prompt_lower = payload.prompt.lower()
     tours = db.scalars(select(Tour).where(Tour.status == "Đang mở")).all()
@@ -640,9 +640,43 @@ def public_ai_chat(payload: PublicAIChatRequest, request: Request, db: Session =
         if (dest_name and dest_name in prompt_lower) or (region and region in prompt_lower) or t.name.lower() in prompt_lower or t.category.lower() in prompt_lower:
             matched.append(t)
 
-    selected = matched[:3] if matched else tours[:3]
+    selected = matched[:4] if matched else tours[:4]
+    matched_ids = [t.id for t in selected]
+
+    ai_cfg = resolve_ai_config()
+    if ai_cfg["provider"] != "none":
+        # Chuẩn bị dữ liệu tour thực tế trong hệ thống làm tri thức cho Gemini AI
+        tours_catalog_info = []
+        for t in tours:
+            dest = next((d for d in destinations if d.id == t.destination_id), None)
+            t_deps = [dep for dep in departures if dep.tour_id == t.id and remaining_seats(db, dep) > 0]
+            dates_str = ", ".join(d.departure_date for d in t_deps[:3]) if t_deps else "Chưa có ngày mở"
+            tours_catalog_info.append(
+                f"- Tour #{t.id}: {t.name} | Điểm đến: {dest.name if dest else 'VN'} ({dest.region if dest else ''}) | "
+                f"Giá: {t.price:,.0f}đ/khách | {t.duration_days} ngày | Thể loại: {t.category} | "
+                f"Khởi hành: {dates_str} | Lịch trình tóm tắt: {t.description}"
+            )
+
+        system_prompt = (
+            "Bạn là chuyên viên tư vấn du lịch thông minh, thân thiện của VietTour AI. "
+            "Hãy trả lời khách hàng bằng tiếng Việt tự nhiên, nhiệt tình, lịch sự, có biểu tượng cảm xúc sinh động. "
+            "Chỉ tư vấn dựa trên danh mục tour có thật dưới đây. "
+            "Nêu rõ tên tour, thời lượng, mức giá và điểm nổi bật phù hợp với yêu cầu của khách hàng. "
+            "Nếu khách hỏi địa điểm chưa có tour, hãy giới thiệu các tour gần nhất đang có trong danh sách. "
+            "Không bịa thông tin giá hoặc ngày khởi hành.\n\n"
+            "DANH SÁCH TOUR HIỆN CÓ CỦA VIETTOUR:\n" + "\n".join(tours_catalog_info)
+        )
+
+        try:
+            ai_reply = await optional_ai(system_prompt, payload.prompt, max_tokens=650)
+            if ai_reply and ai_reply.strip():
+                return {"reply": ai_reply.strip(), "tour_ids": matched_ids}
+        except Exception:
+            pass
+
+    # Fallback tự động khi chưa cấu hình AI key hoặc khi dịch vụ AI bận
     reply_lines = ["Xin chào quý khách! VietTour AI hân hạnh gợi ý cho bạn các tour nổi bật phù hợp:"]
-    for i, t in enumerate(selected, 1):
+    for i, t in enumerate(selected[:3], 1):
         dest = next((d for d in destinations if d.id == t.destination_id), None)
         t_deps = [dep for dep in departures if dep.tour_id == t.id and remaining_seats(db, dep) > 0]
         dates_str = ", ".join(d.departure_date for d in t_deps[:2]) if t_deps else "Sắp có lịch mới"
@@ -654,7 +688,7 @@ def public_ai_chat(payload: PublicAIChatRequest, request: Request, db: Session =
             f"   • Hành trình: {t.description}"
         )
     reply_lines.append("\n👉 Bạn có thể bấm chọn tour trực tiếp trên trang chủ để xem lịch trình ngày và đặt chỗ nhanh chóng!")
-    return {"reply": "\n".join(reply_lines), "tour_ids": [t.id for t in selected]}
+    return {"reply": "\n".join(reply_lines), "tour_ids": matched_ids}
 
 
 class CustomerRegisterRequest(BaseModel):
@@ -1131,11 +1165,49 @@ def get_seats(departure_id: int, db: Session = Depends(get_db), user: dict[str, 
     return {"departure_id": departure.id, "capacity": departure.capacity, "remaining_seats": remaining_seats(db, departure)}
 
 
+def resolve_ai_config() -> dict[str, str]:
+    """
+    Xác định cấu hình AI đang hoạt động:
+    - Nếu có GEMINI_API_KEY hoặc AI_API_KEY là Google key (bắt đầu bằng AIzaSy): Sử dụng Google Gemini.
+    - Nếu có AI_API_KEY khác: Sử dụng OpenAI-compatible endpoint.
+    - Nếu không có key: Chuyển sang chế độ xác định (deterministic fallback).
+    """
+    gemini_key = settings.gemini_api_key.strip()
+    if not gemini_key and settings.ai_api_key.strip().startswith("AIzaSy"):
+        gemini_key = settings.ai_api_key.strip()
+
+    if gemini_key:
+        model = settings.gemini_model.strip() or "gemini-3.6-flash"
+        if model in ("gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"):
+            model = "gemini-3.6-flash"
+        return {
+            "provider": "gemini",
+            "api_key": gemini_key,
+            "model": model,
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        }
+
+    openai_key = settings.ai_api_key.strip()
+    if openai_key:
+        return {
+            "provider": "openai",
+            "api_key": openai_key,
+            "model": settings.ai_model.strip() or "gpt-4o-mini",
+            "base_url": settings.ai_base_url.rstrip("/"),
+        }
+
+    return {"provider": "none", "api_key": "", "model": "", "base_url": ""}
+
+
 @app.get("/api/ai/status", dependencies=[Depends(limit_ai_requests)])
 def ai_status(_user: dict[str, str] = Depends(current_user)):
     require_admin(_user)
-    configured = bool(settings.ai_api_key.strip())
-    return {"configured": configured, "mode": "provider" if configured else "deterministic"}
+    cfg = resolve_ai_config()
+    configured = cfg["provider"] != "none"
+    return {
+        "configured": configured,
+        "mode": "provider" if configured else "deterministic",
+    }
 
 
 @app.post("/api/ai/recommendations", dependencies=[Depends(limit_ai_requests)])
@@ -1180,23 +1252,58 @@ def deterministic_tour_text(destination: str, days: int, style: str, existing: l
 
 
 async def optional_ai(system_prompt: str, user_prompt: str, max_tokens: int = 700) -> str | None:
-    if not settings.ai_api_key:
+    cfg = resolve_ai_config()
+    if cfg["provider"] == "none":
         return None
-    url = f"{settings.ai_base_url.rstrip('/')}/chat/completions"
+
+    if cfg["provider"] == "gemini":
+        from google import genai
+        from google.genai import types
+
+        candidates = [cfg["model"]]
+        for fallback_m in ("gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"):
+            if fallback_m not in candidates:
+                candidates.append(fallback_m)
+
+        for m in candidates:
+            try:
+                client = genai.Client(api_key=cfg["api_key"])
+                response = await client.aio.models.generate_content(
+                    model=m,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.3,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+                if response and response.text:
+                    return response.text
+            except Exception:
+                continue
+
+    # OpenAI-compatible API call (hỗ trợ cả OpenAI và Gemini OpenAI-compatible endpoint)
+    url = f"{cfg['base_url']}/chat/completions"
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            response = await client.post(url, headers={"Authorization": f"Bearer {settings.ai_api_key}"},
-                                         json={"model": settings.ai_model, "temperature": 0.3, "max_tokens": max_tokens,
-                                               "messages": [{"role": "system", "content": system_prompt},
-                                                            {"role": "user", "content": user_prompt}]})
-    except (httpx.TimeoutException, httpx.RequestError):
-        raise HTTPException(status_code=502, detail="Không thể kết nối dịch vụ AI; vui lòng thử lại sau") from None
-    if response.is_error:
-        raise HTTPException(status_code=502, detail="Dịch vụ AI hiện không khả dụng; vui lòng thử lại sau")
-    try:
-        return response.json()["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError):
-        raise HTTPException(status_code=502, detail="Dịch vụ AI trả về dữ liệu không hợp lệ") from None
+            response = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"},
+                json={
+                    "model": cfg["model"],
+                    "temperature": 0.3,
+                    "max_tokens": max_tokens,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+            )
+            if not response.is_error:
+                return response.json()["choices"][0]["message"]["content"]
+    except Exception:
+        pass
+    return None
 
 
 AI_CHAT_TOOLS = [
@@ -1328,8 +1435,9 @@ def _sse(event: str, payload: dict[str, Any]) -> str:
 async def ai_chat(payload: AIChatRequest, db: Session = Depends(get_db),
                   _user: dict[str, str] = Depends(current_user)):
     require_admin(_user)
-    if not settings.ai_api_key.strip():
-        raise HTTPException(status_code=503, detail="Cần cấu hình AI_API_KEY để sử dụng trò chuyện trực tuyến")
+    cfg = resolve_ai_config()
+    if cfg["provider"] == "none":
+        raise HTTPException(status_code=503, detail="Cần cấu hình GEMINI_API_KEY hoặc AI_API_KEY để sử dụng trò chuyện trực tuyến")
 
     async def stream() -> AsyncIterator[str]:
         messages: list[dict[str, Any]] = [
@@ -1340,13 +1448,13 @@ async def ai_chat(payload: AIChatRequest, db: Session = Depends(get_db),
         ]
         messages.extend({"role": message.role, "content": message.content} for message in payload.history)
         messages.append({"role": "user", "content": payload.prompt})
-        url = f"{settings.ai_base_url.rstrip('/')}/chat/completions"
-        headers = {"Authorization": f"Bearer {settings.ai_api_key}", "Content-Type": "application/json"}
+        url = f"{cfg['base_url']}/chat/completions"
+        headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 tool_calls: dict[int, dict[str, Any]] = {}
                 initial_request = {
-                    "model": settings.ai_model, "temperature": 0.2, "stream": True,
+                    "model": cfg["model"], "temperature": 0.2, "stream": True,
                     "messages": messages, "tools": AI_CHAT_TOOLS, "tool_choice": "auto",
                 }
                 async with client.stream("POST", url, headers=headers, json=initial_request) as response:
@@ -1396,7 +1504,7 @@ async def ai_chat(payload: AIChatRequest, db: Session = Depends(get_db),
                     messages.append({"role": "assistant", "tool_calls": calls})
                     messages.extend(tool_messages)
                     final_request = {
-                        "model": settings.ai_model, "temperature": 0.2, "stream": True,
+                        "model": cfg["model"], "temperature": 0.2, "stream": True,
                         "messages": messages,
                     }
                     async with client.stream("POST", url, headers=headers, json=final_request) as response:

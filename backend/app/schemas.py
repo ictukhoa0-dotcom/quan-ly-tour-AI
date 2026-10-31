@@ -9,6 +9,7 @@ class InputModel(BaseModel):
 class LoginRequest(InputModel):
     username: str = Field(min_length=1, max_length=40)
     password: str = Field(min_length=1, max_length=72)
+    remember_me: bool = False
 
 
 class AccountCreate(InputModel):

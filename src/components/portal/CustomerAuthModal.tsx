@@ -25,9 +25,14 @@ export default function CustomerAuthModal({
   // Customer sub-tab: "login" vs "register"
   const [mode, setMode] = useState<"login" | "register">("login");
 
-  // Customer login form
-  const [loginPhone, setLoginPhone] = useState("");
+  // Customer login form with saved phone
+  const [loginPhone, setLoginPhone] = useState(() => {
+    return localStorage.getItem("viettour_customer_phone") || "";
+  });
   const [loginPassword, setLoginPassword] = useState("");
+  const [rememberCustomer, setRememberCustomer] = useState(() => {
+    return localStorage.getItem("viettour_remember_customer") !== "false";
+  });
 
   // Customer register form
   const [regName, setRegName] = useState("");
@@ -36,9 +41,14 @@ export default function CustomerAuthModal({
   const [regEmail, setRegEmail] = useState("");
   const [regAddress, setRegAddress] = useState("");
 
-  // Admin login form
-  const [adminUsername, setAdminUsername] = useState("admin");
+  // Admin login form with saved username
+  const [adminUsername, setAdminUsername] = useState(() => {
+    return localStorage.getItem("viettour_admin_username") || "admin";
+  });
   const [adminPassword, setAdminPassword] = useState("");
+  const [rememberAdmin, setRememberAdmin] = useState(() => {
+    return localStorage.getItem("viettour_remember_admin") === "true";
+  });
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -64,7 +74,15 @@ export default function CustomerAuthModal({
       const res = await api.customerLogin({
         phone: loginPhone.trim(),
         password: loginPassword,
+        remember_me: rememberCustomer,
       });
+      if (rememberCustomer) {
+        localStorage.setItem("viettour_remember_customer", "true");
+        localStorage.setItem("viettour_customer_phone", loginPhone.trim());
+      } else {
+        localStorage.setItem("viettour_remember_customer", "false");
+        localStorage.removeItem("viettour_customer_phone");
+      }
       onSuccess(res.customer);
       onClose();
     } catch (err: unknown) {
@@ -112,7 +130,14 @@ export default function CustomerAuthModal({
     setLoading(true);
     setError("");
     try {
-      const res = await api.login(adminUsername.trim(), adminPassword);
+      const res = await api.login(adminUsername.trim(), adminPassword, rememberAdmin);
+      if (rememberAdmin) {
+        localStorage.setItem("viettour_remember_admin", "true");
+        localStorage.setItem("viettour_admin_username", adminUsername.trim());
+      } else {
+        localStorage.setItem("viettour_remember_admin", "false");
+        localStorage.removeItem("viettour_admin_username");
+      }
       if (onAdminSuccess) {
         onAdminSuccess(res.user);
       }
@@ -255,6 +280,19 @@ export default function CustomerAuthModal({
                       className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:border-blue-500"
                     />
                   </div>
+                </div>
+
+                <div className="flex items-center justify-between py-0.5">
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={rememberCustomer}
+                      onChange={(e) => setRememberCustomer(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span>Ghi nhớ đăng nhập</span>
+                  </label>
+                  <span className="text-[11px] text-slate-400">Lưu số điện thoại</span>
                 </div>
 
                 <button
@@ -427,6 +465,19 @@ export default function CustomerAuthModal({
                     className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
                   />
                 </div>
+              </div>
+
+              <div className="flex items-center justify-between py-0.5">
+                <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={rememberAdmin}
+                    onChange={(e) => setRememberAdmin(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <span>Ghi nhớ đăng nhập</span>
+                </label>
+                <span className="text-[11px] text-slate-400">Duy trì 30 ngày</span>
               </div>
 
               <button

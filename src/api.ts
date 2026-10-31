@@ -114,9 +114,9 @@ async function streamAIChat(
 }
 
 export const api = {
-  login: (username: string, password: string) =>
+  login: (username: string, password: string, remember_me: boolean = false) =>
     request<{ user: User }>("/auth/login", {
-      method: "POST", body: JSON.stringify({ username, password }),
+      method: "POST", body: JSON.stringify({ username, password, remember_me }),
     }),
   logout: () => request<{ message: string }>("/auth/logout", { method: "POST" }),
   me: () => request<User>("/me"),
@@ -165,7 +165,7 @@ export const api = {
     request<{ reply: string; tour_ids: number[] }>("/public/ai-chat", { method: "POST", body: JSON.stringify({ prompt }) }),
   customerRegister: (payload: { name: string; phone: string; password: string; email?: string; address?: string }) =>
     request<{ customer: CustomerUser; token: string }>("/public/customer/register", { method: "POST", body: JSON.stringify(payload) }),
-  customerLogin: (payload: { phone: string; password: string }) =>
+  customerLogin: (payload: { phone: string; password: string; remember_me?: boolean }) =>
     request<{ customer: CustomerUser; token: string }>("/public/customer/login", { method: "POST", body: JSON.stringify(payload) }),
   customerMe: () => request<{ customer: CustomerUser }>("/public/customer/me"),
   customerLogout: () => request<{ message: string }>("/public/customer/logout", { method: "POST" }),

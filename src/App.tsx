@@ -42,7 +42,13 @@ export default function App() {
   const [viewMode, setViewMode] = useState<"portal" | "admin">("portal");
   const [loginModalOpen, setLoginModalOpen] = useState(false);
 
-  const [login, setLogin] = useState({ username: "", password: "" });
+  const [rememberAdmin, setRememberAdmin] = useState(() => {
+    return localStorage.getItem("viettour_remember_admin") === "true";
+  });
+  const [login, setLogin] = useState(() => ({
+    username: localStorage.getItem("viettour_admin_username") || "",
+    password: "",
+  }));
   const [loginError, setLoginError] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
 
@@ -120,10 +126,17 @@ export default function App() {
     setLoginBusy(true);
     setLoginError("");
     try {
-      const result = await api.login(login.username, login.password);
+      const result = await api.login(login.username, login.password, rememberAdmin);
+      if (rememberAdmin) {
+        localStorage.setItem("viettour_remember_admin", "true");
+        localStorage.setItem("viettour_admin_username", login.username);
+      } else {
+        localStorage.setItem("viettour_remember_admin", "false");
+        localStorage.removeItem("viettour_admin_username");
+      }
       setUser(result.user);
       setAuthReady(true);
-      setLogin({ username: "", password: "" });
+      setLogin({ username: rememberAdmin ? login.username : "", password: "" });
       setLoginModalOpen(false);
       setViewMode("admin");
       notify(`Đăng nhập thành công! Chào mừng ${result.user.name}.`, "success");
@@ -190,6 +203,8 @@ export default function App() {
           loginData={login}
           loginBusy={loginBusy}
           loginError={loginError}
+          rememberMe={rememberAdmin}
+          onChangeRememberMe={setRememberAdmin}
           onClose={() => setLoginModalOpen(false)}
           onChangeLogin={setLogin}
           onSubmitLogin={submitLogin}
